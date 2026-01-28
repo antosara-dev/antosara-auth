@@ -24,12 +24,16 @@ func RegisterRoutes(authHandler *AuthHandler, r chi.Router) {
 
 	// API routes
 	r.Route("/api", func(r chi.Router) {
-		// Auth routes
-		r.Post("/signup", authHandler.Signup)
-		r.Post("/verify-email", authHandler.VerifyEmail)
-		r.Post("/login", authHandler.Login)
-		r.Post("/reset-password", authHandler.ResetPassword)
-		r.Post("/reset-password/confirm", authHandler.ConfirmResetPassword)
+		// Rate limiting for authentication endpoints
+		r.Group(func(r chi.Router) {
+			r.Use(authHandler.RateLimitMiddleware)
+			// Auth routes
+			r.Post("/signup", authHandler.Signup)
+			r.Post("/verify-email", authHandler.VerifyEmail)
+			r.Post("/login", authHandler.Login)
+			r.Post("/reset-password", authHandler.ResetPassword)
+			r.Post("/reset-password/confirm", authHandler.ConfirmResetPassword)
+		})
 	})
 
 	// Protected routes
@@ -38,10 +42,14 @@ func RegisterRoutes(authHandler *AuthHandler, r chi.Router) {
 		r.Use(authHandler.CookieTokenExtractor)
 		// Seek, verify and validate JWT tokens
 		r.Use(jwtauth.Verifier(authHandler.tokenAuth))
+		// Validate JWT claims (issuer/audience/type)
+		r.Use(authHandler.ValidateJWTClaims)
 		// Check if token is revoked
 		r.Use(authHandler.TokenRevocationChecker)
 		// Authenticate the token
 		r.Use(jwtauth.Authenticator(authHandler.tokenAuth))
+		// CSRF protection for cookie-based auth (session-bound, rotating)
+		r.Use(authHandler.CSRFProtector)
 
 		// Protected API routes
 		r.Route("/api/profile", func(r chi.Router) {

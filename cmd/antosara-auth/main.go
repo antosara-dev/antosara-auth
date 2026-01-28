@@ -1,37 +1,18 @@
 package main
 
 import (
-	"github.com/antosara-dev/antosara-auth/internal"
-	"github.com/antosara-dev/antosara-auth/pkg"
 	"log"
+	"net/http"
 	"os"
+	"strings"
 	"time"
 
-	"net/http"
+	"github.com/antosara-dev/antosara-auth/internal"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 )
-
-var (
-	userRepo         pkg.UserRepository
-	tokenRevokeRepo  pkg.TokenRevocationRepository
-)
-
-func init() {
-	// Initialize DynamoDB repositories
-	var err error
-	userRepo, err = internal.NewDynamoDBUserRepository()
-	if err != nil {
-		log.Fatalf("Failed to initialize DynamoDB repository: %v", err)
-	}
-
-	tokenRevokeRepo, err = internal.NewDynamoDBTokenRevocationRepository()
-	if err != nil {
-		log.Fatalf("Failed to initialize token revocation repository: %v", err)
-	}
-}
 
 // securityHeaders adds security headers to all responses
 func securityHeaders(next http.Handler) http.Handler {
@@ -41,7 +22,10 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("X-XSS-Protection", "1; mode=block")
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-		w.Header().Set("Content-Security-Policy", "default-src 'self' https://*.googleapis.com; script-src 'self' 'unsafe-inline' https://accounts.google.com https://apis.google.com https://*.googleapis.com https://cdn.jsdelivr.net; worker-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:;")
+		// Hardened CSP: removed 'unsafe-inline' from script-src to prevent XSS
+		// If inline scripts are required, use nonces: script-src 'self' 'nonce-{random}' ...
+		// For style-src, 'unsafe-inline' may be needed for some frameworks, but prefer nonces when possible
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:;")
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		w.Header().Set("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
 
@@ -50,9 +34,25 @@ func securityHeaders(next http.Handler) http.Handler {
 }
 
 func main() {
-	// Load environment variables based on MODE
+	// Load environment variables FIRST (before initializing repositories)
 	if err := internal.LoadEnv(); err != nil {
 		log.Fatalf("Failed to load environment variables: %v", err)
+	}
+
+	// Initialize DynamoDB repositories AFTER loading environment variables
+	userRepo, err := internal.NewDynamoDBUserRepository()
+	if err != nil {
+		log.Fatalf("Failed to initialize DynamoDB repository: %v", err)
+	}
+
+	tokenRevokeRepo, err := internal.NewDynamoDBTokenRevocationRepository()
+	if err != nil {
+		log.Fatalf("Failed to initialize token revocation repository: %v", err)
+	}
+
+	csrfRepo, err := internal.NewDynamoDBSessionCSRFRepository()
+	if err != nil {
+		log.Fatalf("Failed to initialize CSRF repository: %v", err)
 	}
 
 	// Create a new Chi router
@@ -62,8 +62,20 @@ func main() {
 	r.Use(securityHeaders)
 
 	// Add CORS middleware
+	// Build allowed origins: include HOST_NAME and any additional origins from CORS_ORIGINS env var
+	allowedOrigins := []string{"https://" + os.Getenv("HOST_NAME")}
+	if corsOrigins := os.Getenv("CORS_ORIGINS"); corsOrigins != "" {
+		// CORS_ORIGINS can be comma-separated list: "https://app.domain.com,https://api.domain.com"
+		origins := strings.Split(corsOrigins, ",")
+		for _, origin := range origins {
+			origin = strings.TrimSpace(origin)
+			if origin != "" {
+				allowedOrigins = append(allowedOrigins, origin)
+			}
+		}
+	}
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"https://" + os.Getenv("HOST_NAME"), "https://apis.google.com"},
+		AllowedOrigins:   allowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
 		ExposedHeaders:   []string{"Link"},
@@ -87,7 +99,7 @@ func main() {
 	}
 
 	// Initialize auth handler
-	authHandler := internal.NewAuthHandler(os.Getenv("SECRET_KEY"), userRepo, tokenRevokeRepo)
+	authHandler := internal.NewAuthHandler(os.Getenv("SECRET_KEY"), userRepo, tokenRevokeRepo, csrfRepo)
 
 	// Register all routes
 	internal.RegisterRoutes(authHandler, r)

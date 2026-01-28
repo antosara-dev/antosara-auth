@@ -8,14 +8,16 @@ import (
 
 // User represents a user in the system
 type User struct {
-	Email            string    `json:"email"`
-	Alias            string    `json:"alias"`
-	Password         string    `json:"-"` // In production, this should be hashed
-	Verified         bool      `json:"verified"`
-	VerificationCode string    `json:"-"`
-	ResetToken       string    `json:"-"`
-	FailedAttempts   int       `json:"-"`
-	LockoutUntil     time.Time `json:"-"`
+	Email                  string    `json:"email"`
+	Alias                  string    `json:"alias"`
+	Password               string    `json:"-"` // In production, this should be hashed
+	Verified               bool      `json:"verified"`
+	VerificationCode       string    `json:"-"`
+	VerificationCodeExpiry time.Time `json:"-"`
+	ResetToken             string    `json:"-"`
+	ResetTokenExpiry       time.Time `json:"-"`
+	FailedAttempts         int       `json:"-"`
+	LockoutUntil           time.Time `json:"-"`
 }
 
 // UserRepository defines the interface for user data operations
@@ -38,7 +40,7 @@ type UserRepository interface {
 
 // RevokedToken represents a revoked JWT token
 type RevokedToken struct {
-	JTI      string    `json:"jti"`      // JWT ID (unique identifier for the token)
+	JTI       string    `json:"jti"`       // JWT ID (unique identifier for the token)
 	RevokedAt time.Time `json:"revokedAt"` // When the token was revoked
 	ExpiresAt time.Time `json:"expiresAt"` // When the token expires (for cleanup)
 }
@@ -53,6 +55,20 @@ type TokenRevocationRepository interface {
 
 	// CleanupExpiredRevocations removes expired token revocations
 	CleanupExpiredRevocations(ctx context.Context) error
+}
+
+// SessionCSRF represents the current CSRF token for a session (JWT jti).
+type SessionCSRF struct {
+	JTI       string    `json:"jti"`
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+// SessionCSRFRepository stores session-bound CSRF tokens.
+type SessionCSRFRepository interface {
+	Put(ctx context.Context, jti string, token string, expiresAt time.Time) error
+	Get(ctx context.Context, jti string) (*SessionCSRF, error)
+	Delete(ctx context.Context, jti string) error
 }
 
 // Common errors

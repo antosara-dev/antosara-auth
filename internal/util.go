@@ -54,10 +54,12 @@ func sendVerificationEmail(toEmail, code string) error {
 	auth := smtp.PlainAuth("", os.Getenv("EMAIL_HOST_USER"), os.Getenv("EMAIL_HOST_PASSWORD"), os.Getenv("EMAIL_HOST"))
 	err := smtp.SendMail(os.Getenv("EMAIL_HOST")+":587", auth, fromEmail, []string{toEmail}, []byte("To: "+toEmail+"\r\nSubject: "+subject+"\r\n\r\n"+body))
 	if err != nil {
-		log.Fatalf("Could not send email to %s: %v", toEmail, err)
+		// Don't log email addresses (PII protection)
+		log.Printf("Could not send verification email: %v", err)
 		return err
 	}
-	log.Printf("Verification Email sent to %s\n", toEmail)
+	// Don't log email addresses (PII protection)
+	log.Printf("Verification email sent successfully")
 	return nil
 }
 
@@ -73,9 +75,11 @@ func sendPasswordResetEmail(toEmail, resetToken string) error {
 	auth := smtp.PlainAuth("", os.Getenv("EMAIL_HOST_USER"), os.Getenv("EMAIL_HOST_PASSWORD"), os.Getenv("EMAIL_HOST"))
 	err := smtp.SendMail(os.Getenv("EMAIL_HOST")+":587", auth, fromEmail, []string{toEmail}, []byte("To: "+toEmail+"\r\nSubject: "+subject+"\r\n\r\n"+body))
 	if err != nil {
-		log.Printf("Could not send password reset email to %s: %v", toEmail, err)
+		// Don't log email addresses (PII protection)
+		log.Printf("Could not send password reset email: %v", err)
 		return err
 	}
-	log.Printf("Password reset email sent to %s\n", toEmail)
+	// Don't log email addresses (PII protection)
+	log.Printf("Password reset email sent successfully")
 	return nil
 }

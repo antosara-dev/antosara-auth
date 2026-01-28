@@ -1,24 +1,172 @@
 package internal
 
 import (
-	"github.com/antosara-dev/antosara-auth/pkg"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
-	"math/rand"
+	"math/big"
+	"os"
+	"strconv"
 	"time"
+
+	"github.com/antosara-dev/antosara-auth/pkg"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
 const (
-	usersTableName           = "Users"
-	revokedTokensTableName   = "RevokedTokens"
+	usersTableName         = "Users"
+	revokedTokensTableName = "RevokedTokens"
+	sessionCSRFTablename   = "SessionCSRF"
 )
+
+// getDynamoDBClient creates a DynamoDB client with support for local DynamoDB
+func getDynamoDBClient() (*dynamodb.Client, error) {
+	// If DYNAMODB_ENDPOINT is set, use it for local DynamoDB
+	endpoint := os.Getenv("DYNAMODB_ENDPOINT")
+
+	opts := []func(*config.LoadOptions) error{
+		config.WithRegion(getAWSRegion()),
+	}
+
+	if endpoint != "" {
+		// For local DynamoDB, use dummy credentials
+		opts = append(opts, config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("dummy", "dummy", "")))
+	}
+
+	cfg, err := config.LoadDefaultConfig(context.TODO(), opts...)
+	if err != nil {
+		return nil, fmt.Errorf("unable to load SDK config: %v", err)
+	}
+
+	// Configure DynamoDB client options
+	clientOpts := []func(*dynamodb.Options){}
+	if endpoint != "" {
+		// Use EndpointResolverFromURL to point to local DynamoDB
+		clientOpts = append(clientOpts, dynamodb.WithEndpointResolver(dynamodb.EndpointResolverFromURL(endpoint)))
+	}
+
+	return dynamodb.NewFromConfig(cfg, clientOpts...), nil
+}
+
+// getAWSRegion returns the AWS region from environment or defaults to us-east-1
+func getAWSRegion() string {
+	region := os.Getenv("AWS_REGION")
+	if region == "" {
+		return "us-east-1"
+	}
+	return region
+}
+
+// DynamoDBSessionCSRFRepository implements SessionCSRFRepository using DynamoDB
+type DynamoDBSessionCSRFRepository struct {
+	client    *dynamodb.Client
+	tableName string
+}
+
+func NewDynamoDBSessionCSRFRepository() (*DynamoDBSessionCSRFRepository, error) {
+	client, err := getDynamoDBClient()
+	if err != nil {
+		return nil, err
+	}
+
+	repo := &DynamoDBSessionCSRFRepository{
+		client:    client,
+		tableName: sessionCSRFTablename,
+	}
+	if err := repo.createTableIfNotExists(); err != nil {
+		return nil, err
+	}
+	return repo, nil
+}
+
+func (r *DynamoDBSessionCSRFRepository) createTableIfNotExists() error {
+	_, err := r.client.DescribeTable(context.TODO(), &dynamodb.DescribeTableInput{
+		TableName: aws.String(r.tableName),
+	})
+	if err == nil {
+		return nil
+	}
+
+	_, err = r.client.CreateTable(context.TODO(), &dynamodb.CreateTableInput{
+		TableName: aws.String(r.tableName),
+		AttributeDefinitions: []types.AttributeDefinition{
+			{
+				AttributeName: aws.String("JTI"),
+				AttributeType: types.ScalarAttributeTypeS,
+			},
+		},
+		KeySchema: []types.KeySchemaElement{
+			{
+				AttributeName: aws.String("JTI"),
+				KeyType:       types.KeyTypeHash,
+			},
+		},
+		BillingMode: types.BillingModePayPerRequest,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create session CSRF table: %v", err)
+	}
+	return nil
+}
+
+func (r *DynamoDBSessionCSRFRepository) Put(ctx context.Context, jti string, token string, expiresAt time.Time) error {
+	item, err := attributevalue.MarshalMap(&pkg.SessionCSRF{
+		JTI:       jti,
+		Token:     token,
+		ExpiresAt: expiresAt,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal session csrf: %v", err)
+	}
+	_, err = r.client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(r.tableName),
+		Item:      item,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to store session csrf: %v", err)
+	}
+	return nil
+}
+
+func (r *DynamoDBSessionCSRFRepository) Get(ctx context.Context, jti string) (*pkg.SessionCSRF, error) {
+	result, err := r.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"JTI": &types.AttributeValueMemberS{Value: jti},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get session csrf: %v", err)
+	}
+	if result.Item == nil {
+		return nil, pkg.ErrUserNotFound
+	}
+	var out pkg.SessionCSRF
+	if err := attributevalue.UnmarshalMap(result.Item, &out); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal session csrf: %v", err)
+	}
+	return &out, nil
+}
+
+func (r *DynamoDBSessionCSRFRepository) Delete(ctx context.Context, jti string) error {
+	_, err := r.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"JTI": &types.AttributeValueMemberS{Value: jti},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to delete session csrf: %v", err)
+	}
+	return nil
+}
 
 // DynamoDBUserRepository implements UserRepository using DynamoDB
 type DynamoDBUserRepository struct {
@@ -28,14 +176,11 @@ type DynamoDBUserRepository struct {
 
 // NewDynamoDBUserRepository creates a new DynamoDB user repository
 func NewDynamoDBUserRepository() (*DynamoDBUserRepository, error) {
-	// Load AWS configuration
-	cfg, err := config.LoadDefaultConfig(context.TODO())
-	if err != nil {
-		return nil, fmt.Errorf("unable to load SDK config: %v", err)
-	}
-
 	// Create DynamoDB client
-	client := dynamodb.NewFromConfig(cfg)
+	client, err := getDynamoDBClient()
+	if err != nil {
+		return nil, err
+	}
 
 	// Create repository
 	repo := &DynamoDBUserRepository{
@@ -70,11 +215,29 @@ func (r *DynamoDBUserRepository) createTableIfNotExists() error {
 				AttributeName: aws.String("Email"),
 				AttributeType: types.ScalarAttributeTypeS,
 			},
+			{
+				AttributeName: aws.String("ResetToken"),
+				AttributeType: types.ScalarAttributeTypeS,
+			},
 		},
 		KeySchema: []types.KeySchemaElement{
 			{
 				AttributeName: aws.String("Email"),
 				KeyType:       types.KeyTypeHash,
+			},
+		},
+		GlobalSecondaryIndexes: []types.GlobalSecondaryIndex{
+			{
+				IndexName: aws.String("ResetTokenIndex"),
+				KeySchema: []types.KeySchemaElement{
+					{
+						AttributeName: aws.String("ResetToken"),
+						KeyType:       types.KeyTypeHash,
+					},
+				},
+				Projection: &types.Projection{
+					ProjectionType: types.ProjectionTypeAll,
+				},
 			},
 		},
 		BillingMode: types.BillingModePayPerRequest,
@@ -117,12 +280,31 @@ func (r *DynamoDBUserRepository) CreateUser(ctx context.Context, user *pkg.User)
 	user.Verified = false
 
 	// Generate a random 6-digit verification code
-	code := fmt.Sprintf("%06d", rand.Intn(1000000))
+	n, err := rand.Int(rand.Reader, big.NewInt(1000000))
+	if err != nil {
+		return fmt.Errorf("failed to generate verification code: %v", err)
+	}
+	code := fmt.Sprintf("%06d", n.Int64())
 	user.VerificationCode = code
+	// Default verification-code expiry: 24 hours (override with VERIFICATION_CODE_EXPIRY_MINUTES)
+	expiryMinutes := 24 * 60
+	if s := os.Getenv("VERIFICATION_CODE_EXPIRY_MINUTES"); s != "" {
+		if v, err := strconv.Atoi(s); err == nil && v > 0 {
+			expiryMinutes = v
+		}
+	}
+	user.VerificationCodeExpiry = time.Now().Add(time.Duration(expiryMinutes) * time.Minute)
 
 	item, err := attributevalue.MarshalMap(user)
 	if err != nil {
 		return fmt.Errorf("failed to marshal user: %v", err)
+	}
+
+	// Remove ResetToken from item if it's empty (DynamoDB doesn't allow empty strings for GSI keys)
+	if resetTokenVal, ok := item["ResetToken"]; ok {
+		if strVal, ok := resetTokenVal.(*types.AttributeValueMemberS); ok && strVal.Value == "" {
+			delete(item, "ResetToken")
+		}
 	}
 
 	_, err = r.client.PutItem(ctx, &dynamodb.PutItemInput{
@@ -133,7 +315,8 @@ func (r *DynamoDBUserRepository) CreateUser(ctx context.Context, user *pkg.User)
 	if err != nil {
 		var conditionCheckFailedErr *types.ConditionalCheckFailedException
 		if errors.As(err, &conditionCheckFailedErr) {
-			return fmt.Errorf("user with email %s already exists", user.Email)
+			// Don't include email in error message (prevents information leakage)
+			return fmt.Errorf("user already exists")
 		}
 		return fmt.Errorf("failed to create user: %v", err)
 	}
@@ -152,6 +335,13 @@ func (r *DynamoDBUserRepository) UpdateUser(ctx context.Context, user *pkg.User)
 	item, err := attributevalue.MarshalMap(user)
 	if err != nil {
 		return fmt.Errorf("failed to marshal user: %v", err)
+	}
+
+	// Remove ResetToken from item if it's empty (DynamoDB doesn't allow empty strings for GSI keys)
+	if resetTokenVal, ok := item["ResetToken"]; ok {
+		if strVal, ok := resetTokenVal.(*types.AttributeValueMemberS); ok && strVal.Value == "" {
+			delete(item, "ResetToken")
+		}
 	}
 
 	_, err = r.client.PutItem(ctx, &dynamodb.PutItemInput{
@@ -192,16 +382,16 @@ func (r *DynamoDBUserRepository) DeleteUser(ctx context.Context, email string) e
 
 // GetUserByResetToken retrieves a user by their reset token
 func (r *DynamoDBUserRepository) GetUserByResetToken(ctx context.Context, token string) (*pkg.User, error) {
-	// Use scan operation since reset token is not a primary key
-	result, err := r.client.Scan(ctx, &dynamodb.ScanInput{
-		TableName:        aws.String(r.tableName),
-		FilterExpression: aws.String("ResetToken = :token"),
+	result, err := r.client.Query(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(r.tableName),
+		IndexName:              aws.String("ResetTokenIndex"),
+		KeyConditionExpression: aws.String("ResetToken = :token"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":token": &types.AttributeValueMemberS{Value: token},
 		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to scan for user: %v", err)
+		return nil, fmt.Errorf("failed to query user by reset token: %v", err)
 	}
 
 	if len(result.Items) == 0 {
@@ -226,14 +416,11 @@ type DynamoDBTokenRevocationRepository struct {
 
 // NewDynamoDBTokenRevocationRepository creates a new DynamoDB token revocation repository
 func NewDynamoDBTokenRevocationRepository() (*DynamoDBTokenRevocationRepository, error) {
-	// Load AWS configuration
-	cfg, err := config.LoadDefaultConfig(context.TODO())
-	if err != nil {
-		return nil, fmt.Errorf("unable to load SDK config: %v", err)
-	}
-
 	// Create DynamoDB client
-	client := dynamodb.NewFromConfig(cfg)
+	client, err := getDynamoDBClient()
+	if err != nil {
+		return nil, err
+	}
 
 	// Create repository
 	repo := &DynamoDBTokenRevocationRepository{
