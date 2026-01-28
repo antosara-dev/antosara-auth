@@ -1,7 +1,11 @@
 
-# Antosara
+# Antosara Auth
 
 A secure authentication and user management system
+
+**Module Path:** `github.com/antosara-dev/antosara-auth`
+
+> **Note:** This is a private repository. See [MODULE_USAGE.md](./MODULE_USAGE.md) for instructions on how to use this module in other projects.
 
 ## Features
 

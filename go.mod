@@ -1,4 +1,4 @@
-module antosara-auth
+module github.com/antosara-dev/antosara-auth
 
 go 1.24.1
 

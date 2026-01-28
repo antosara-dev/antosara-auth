@@ -1,7 +1,7 @@
 package internal
 
 import (
-	"antosara-auth/pkg"
+	"github.com/antosara-dev/antosara-auth/pkg"
 	"context"
 	"errors"
 	"fmt"

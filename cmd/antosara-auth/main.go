@@ -1,8 +1,8 @@
 package main
 
 import (
-	"antosara-auth/internal"
-	"antosara-auth/pkg"
+	"github.com/antosara-dev/antosara-auth/internal"
+	"github.com/antosara-dev/antosara-auth/pkg"
 	"log"
 	"os"
 	"time"
