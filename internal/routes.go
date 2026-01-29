@@ -17,6 +17,12 @@ func RegisterRoutes(authHandler *AuthHandler, r chi.Router) {
 		log.Printf("Error getting working directory: %v", err)
 	}
 
+	// Standards-based public JWKS endpoint (rate-limited)
+	r.Group(func(r chi.Router) {
+		r.Use(authHandler.RateLimitMiddleware)
+		r.Get("/.well-known/jwks.json", authHandler.JWKS)
+	})
+
 	// If we're in cmd/antosara, go up two levels to reach project root
 	if filepath.Base(wd) == "antosara" && filepath.Base(filepath.Dir(wd)) == "cmd" {
 		wd = filepath.Dir(filepath.Dir(wd))
@@ -31,6 +37,8 @@ func RegisterRoutes(authHandler *AuthHandler, r chi.Router) {
 			r.Post("/signup", authHandler.Signup)
 			r.Post("/verify-email", authHandler.VerifyEmail)
 			r.Post("/login", authHandler.Login)
+			// Token verification (public, rate-limited)
+			r.Post("/verify-token", authHandler.VerifyToken)
 			r.Post("/reset-password", authHandler.ResetPassword)
 			r.Post("/reset-password/confirm", authHandler.ConfirmResetPassword)
 		})
@@ -40,8 +48,8 @@ func RegisterRoutes(authHandler *AuthHandler, r chi.Router) {
 	r.Group(func(r chi.Router) {
 		// Extract token from cookie and set in Authorization header
 		r.Use(authHandler.CookieTokenExtractor)
-		// Seek, verify and validate JWT tokens
-		r.Use(jwtauth.Verifier(authHandler.tokenAuth))
+		// Seek, verify and validate JWT tokens (RS256 only, key-set verification for rotation)
+		r.Use(authHandler.MultiKeyVerifier)
 		// Validate JWT claims (issuer/audience/type)
 		r.Use(authHandler.ValidateJWTClaims)
 		// Check if token is revoked
@@ -59,6 +67,5 @@ func RegisterRoutes(authHandler *AuthHandler, r chi.Router) {
 
 		// Add logout route
 		r.Post("/api/logout", authHandler.Logout)
-		r.Post("/api/verify-token", authHandler.VerifyToken)
 	})
 }

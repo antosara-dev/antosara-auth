@@ -99,7 +99,12 @@ func main() {
 	}
 
 	// Initialize auth handler
-	authHandler := internal.NewAuthHandler(os.Getenv("SECRET_KEY"), userRepo, tokenRevokeRepo, csrfRepo)
+	// For RS256: use JWT_PRIVATE_KEY (RSA private key in PEM format)
+	jwtPrivateKey := os.Getenv("JWT_PRIVATE_KEY")
+	if jwtPrivateKey == "" {
+		log.Fatalf("JWT_PRIVATE_KEY (for RS256) must be set")
+	}
+	authHandler := internal.NewAuthHandler(jwtPrivateKey, userRepo, tokenRevokeRepo, csrfRepo)
 
 	// Register all routes
 	internal.RegisterRoutes(authHandler, r)

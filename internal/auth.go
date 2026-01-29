@@ -3,8 +3,12 @@ package internal
 import (
 	"context"
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"log"
 	"math/big"
@@ -23,6 +27,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/jwtauth/v5"
 	"github.com/google/uuid"
+	"github.com/lestrrat-go/jwx/v2/jwk"
+	"github.com/lestrrat-go/jwx/v2/jwt"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/time/rate"
 )
@@ -30,6 +36,7 @@ import (
 // AuthHandler handles authentication related operations
 type AuthHandler struct {
 	tokenAuth       *jwtauth.JWTAuth
+	verifyKeySet    jwk.Set // used for RS256 key rotation verification
 	userRepo        pkg.UserRepository
 	tokenRevokeRepo pkg.TokenRevocationRepository
 	csrfRepo        pkg.SessionCSRFRepository
@@ -39,16 +46,275 @@ type AuthHandler struct {
 	rateLimiterMu   sync.RWMutex
 }
 
+type jwkSetJSON struct {
+	Keys []jwkJSON `json:"keys"`
+}
+
+type jwkJSON struct {
+	Kty string `json:"kty"`
+	Use string `json:"use,omitempty"`
+	Alg string `json:"alg,omitempty"`
+	Kid string `json:"kid,omitempty"`
+	N   string `json:"n,omitempty"`
+	E   string `json:"e,omitempty"`
+}
+
+// loadRSAKey loads an RSA private or public key from PEM format string
+func loadRSAKey(keyPEM string, isPrivate bool) (interface{}, error) {
+	block, _ := pem.Decode([]byte(keyPEM))
+	if block == nil {
+		return nil, fmt.Errorf("failed to decode PEM block")
+	}
+
+	if isPrivate {
+		key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+		if err != nil {
+			// Try PKCS8 format
+			parsedKey, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse private key: %v", err)
+			}
+			rsaKey, ok := parsedKey.(*rsa.PrivateKey)
+			if !ok {
+				return nil, fmt.Errorf("key is not an RSA private key")
+			}
+			return rsaKey, nil
+		}
+		return key, nil
+	} else {
+		key, err := x509.ParsePKIXPublicKey(block.Bytes)
+		if err != nil {
+			// Try PKCS1 format
+			key, err := x509.ParsePKCS1PublicKey(block.Bytes)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse public key: %v", err)
+			}
+			return key, nil
+		}
+		rsaKey, ok := key.(*rsa.PublicKey)
+		if !ok {
+			return nil, fmt.Errorf("key is not an RSA public key")
+		}
+		return rsaKey, nil
+	}
+}
+
+func rsaPublicKeyToJWK(pub *rsa.PublicKey) jwkJSON {
+	// base64url without padding
+	n := base64.RawURLEncoding.EncodeToString(pub.N.Bytes())
+	eBytes := big.NewInt(int64(pub.E)).Bytes()
+	e := base64.RawURLEncoding.EncodeToString(eBytes)
+
+	// Deterministic kid from SHA-256(n||e)
+	h := sha256.New()
+	_, _ = h.Write([]byte(n))
+	_, _ = h.Write([]byte("."))
+	_, _ = h.Write([]byte(e))
+	kid := base64.RawURLEncoding.EncodeToString(h.Sum(nil))
+
+	return jwkJSON{
+		Kty: "RSA",
+		Use: "sig",
+		Alg: "RS256",
+		Kid: kid,
+		N:   n,
+		E:   e,
+	}
+}
+
+func rsaPublicKeyToJWKKey(pub *rsa.PublicKey) (jwk.Key, string, error) {
+	j, err := jwk.FromRaw(pub)
+	if err != nil {
+		return nil, "", err
+	}
+	mini := rsaPublicKeyToJWK(pub)
+	if err := j.Set(jwk.KeyIDKey, mini.Kid); err != nil {
+		return nil, "", err
+	}
+	if err := j.Set(jwk.AlgorithmKey, mini.Alg); err != nil {
+		return nil, "", err
+	}
+	if err := j.Set(jwk.KeyUsageKey, mini.Use); err != nil {
+		return nil, "", err
+	}
+	return j, mini.Kid, nil
+}
+
+func splitPEMBlocks(s string) []string {
+	// Accept multiple PEM blocks concatenated in a single env var.
+	rest := []byte(s)
+	var out []string
+	for {
+		block, remaining := pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		out = append(out, string(pem.EncodeToMemory(block)))
+		rest = remaining
+	}
+	return out
+}
+
+// loadVerifyKeySetFromEnv builds a jwk.Set with the current and previous RSA public keys.
+// Env vars:
+// - JWT_PUBLIC_KEY (single PEM) [preferred]
+// - JWT_PUBLIC_KEYS (multiple PEM blocks concatenated) [for rotation overlap]
+// - fallback derives current public key from JWT_PRIVATE_KEY
+func loadVerifyKeySetFromEnv() (jwk.Set, jwkSetJSON, error) {
+	set := jwk.NewSet()
+	var published []jwkJSON
+
+	addPubPEM := func(pemStr string) error {
+		k, err := loadRSAKey(pemStr, false)
+		if err != nil {
+			return err
+		}
+		pub, ok := k.(*rsa.PublicKey)
+		if !ok {
+			return fmt.Errorf("not an RSA public key")
+		}
+		jwkKey, _, err := rsaPublicKeyToJWKKey(pub)
+		if err != nil {
+			return err
+		}
+		set.AddKey(jwkKey)
+		published = append(published, rsaPublicKeyToJWK(pub))
+		return nil
+	}
+
+	// Rotation keys (optional, concatenated PEM)
+	if raw := strings.TrimSpace(os.Getenv("JWT_PUBLIC_KEYS")); raw != "" {
+		for _, block := range splitPEMBlocks(raw) {
+			if strings.TrimSpace(block) == "" {
+				continue
+			}
+			if err := addPubPEM(block); err != nil {
+				return nil, jwkSetJSON{}, fmt.Errorf("invalid JWT_PUBLIC_KEYS entry: %v", err)
+			}
+		}
+	}
+
+	// Single key (optional)
+	if raw := strings.TrimSpace(os.Getenv("JWT_PUBLIC_KEY")); raw != "" {
+		if err := addPubPEM(raw); err != nil {
+			return nil, jwkSetJSON{}, fmt.Errorf("invalid JWT_PUBLIC_KEY: %v", err)
+		}
+	}
+
+	// If nothing provided, derive from private key (current)
+	if set.Len() == 0 {
+		privPEM := strings.TrimSpace(os.Getenv("JWT_PRIVATE_KEY"))
+		if privPEM == "" {
+			return nil, jwkSetJSON{}, fmt.Errorf("JWT_PUBLIC_KEY/JWT_PUBLIC_KEYS or JWT_PRIVATE_KEY must be set")
+		}
+		k, err := loadRSAKey(privPEM, true)
+		if err != nil {
+			return nil, jwkSetJSON{}, err
+		}
+		priv, ok := k.(*rsa.PrivateKey)
+		if !ok {
+			return nil, jwkSetJSON{}, fmt.Errorf("JWT_PRIVATE_KEY is not an RSA private key")
+		}
+		jwkKey, _, err := rsaPublicKeyToJWKKey(&priv.PublicKey)
+		if err != nil {
+			return nil, jwkSetJSON{}, err
+		}
+		set.AddKey(jwkKey)
+		published = append(published, rsaPublicKeyToJWK(&priv.PublicKey))
+	}
+
+	return set, jwkSetJSON{Keys: published}, nil
+}
+
+func loadJWKSFromEnv() (jwkSetJSON, error) {
+	_, published, err := loadVerifyKeySetFromEnv()
+	return published, err
+}
+
+// JWKS serves the public keys for JWT verification at /.well-known/jwks.json
+func (h *AuthHandler) JWKS(w http.ResponseWriter, r *http.Request) {
+	set, err := loadJWKSFromEnv()
+	if err != nil {
+		log.Printf("Failed to load JWKS: %v", err)
+		http.Error(w, "Service temporarily unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/jwk-set+json")
+	_ = json.NewEncoder(w).Encode(set)
+}
+
+// MultiKeyVerifier verifies RS256 tokens against a JWKS-like key set (supports rotation).
+// It writes token+error to context keys expected by jwtauth.FromContext/Authenicator.
+func (h *AuthHandler) MultiKeyVerifier(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+
+		// Find token string (we rely on Authorization header set by CookieTokenExtractor)
+		tokenString := jwtauth.TokenFromHeader(r)
+		if tokenString == "" {
+			ctx = jwtauth.NewContext(ctx, nil, jwtauth.ErrNoTokenFound)
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+
+		// Parse/verify signature against any key in the set.
+		tok, err := jwt.ParseString(tokenString,
+			jwt.WithKeySet(h.verifyKeySet),
+			jwt.WithValidate(false),
+		)
+		if err != nil {
+			ctx = jwtauth.NewContext(ctx, tok, jwtauth.ErrUnauthorized)
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+
+		// Standard claim validation (exp/nbf/iat)
+		if err := jwt.Validate(tok); err != nil {
+			ctx = jwtauth.NewContext(ctx, tok, jwtauth.ErrorReason(err))
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+
+		ctx = jwtauth.NewContext(ctx, tok, nil)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
 // NewAuthHandler creates a new AuthHandler instance
-func NewAuthHandler(secretKey string, userRepo pkg.UserRepository, tokenRevokeRepo pkg.TokenRevocationRepository, csrfRepo pkg.SessionCSRFRepository) *AuthHandler {
-	return &AuthHandler{
-		tokenAuth:       jwtauth.New(os.Getenv("JWT_ALGORITHM"), []byte(secretKey), nil),
+func NewAuthHandler(privateKeyPEM string, userRepo pkg.UserRepository, tokenRevokeRepo pkg.TokenRevocationRepository, csrfRepo pkg.SessionCSRFRepository) *AuthHandler {
+	// Always enforce RS256
+	if alg := os.Getenv("JWT_ALGORITHM"); alg != "" && alg != "RS256" {
+		log.Fatalf("JWT_ALGORITHM must be RS256 (got %q)", alg)
+	}
+	algorithm := "RS256"
+
+	var key interface{}
+	var err error
+
+	// Load RSA private key for signing
+	key, err = loadRSAKey(privateKeyPEM, true)
+	if err != nil {
+		log.Fatalf("Failed to load RSA private key: %v", err)
+	}
+
+	h := &AuthHandler{
+		tokenAuth:       jwtauth.New(algorithm, key, nil),
 		userRepo:        userRepo,
 		tokenRevokeRepo: tokenRevokeRepo,
 		csrfRepo:        csrfRepo,
 		router:          chi.NewRouter(),
 		rateLimiters:    make(map[string]*rate.Limiter),
 	}
+
+	// Build verify key set for rotation
+	keySet, _, err := loadVerifyKeySetFromEnv()
+	if err != nil {
+		log.Fatalf("Failed to load JWT verify key set: %v", err)
+	}
+	h.verifyKeySet = keySet
+
+	return h
 }
 
 // getRateLimiter returns or creates a rate limiter for the given IP address
@@ -437,10 +703,10 @@ func (h *AuthHandler) CSRFProtector(next http.Handler) http.Handler {
 
 // CreateJWTToken creates a new JWT token with enhanced security claims
 func CreateJWTToken(email string) (tokenString string, jti string, expiresAt time.Time, err error) {
-	// Get secret key from environment
-	secretKey := os.Getenv("SECRET_KEY")
-	if secretKey == "" {
-		return "", "", time.Time{}, fmt.Errorf("SECRET_KEY environment variable not set")
+	// Get private key from environment
+	privateKeyPEM := os.Getenv("JWT_PRIVATE_KEY")
+	if privateKeyPEM == "" {
+		return "", "", time.Time{}, fmt.Errorf("JWT_PRIVATE_KEY environment variable not set")
 	}
 
 	// Get expiry hours from environment
@@ -451,8 +717,20 @@ func CreateJWTToken(email string) (tokenString string, jti string, expiresAt tim
 		}
 	}
 
-	// Create new JWT auth with secret key
-	tokenAuth := jwtauth.New(os.Getenv("JWT_ALGORITHM"), []byte(secretKey), nil)
+	// Always enforce RS256
+	if alg := os.Getenv("JWT_ALGORITHM"); alg != "" && alg != "RS256" {
+		return "", "", time.Time{}, fmt.Errorf("JWT_ALGORITHM must be RS256 (got %q)", alg)
+	}
+	algorithm := "RS256"
+
+	// Load RSA private key for signing
+	key, err := loadRSAKey(privateKeyPEM, true)
+	if err != nil {
+		return "", "", time.Time{}, fmt.Errorf("failed to load RSA private key: %v", err)
+	}
+
+	// Create new JWT auth with key
+	tokenAuth := jwtauth.New(algorithm, key, nil)
 
 	// Current time
 	now := time.Now()
@@ -874,8 +1152,106 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AuthHandler) VerifyToken(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Token verified successfully"))
+	// Accept token via:
+	// - Authorization: Bearer <token>
+	// - JSON body: { "token": "<token>" }
+	tokenString := ""
+	if authz := r.Header.Get("Authorization"); authz != "" {
+		if strings.HasPrefix(authz, "Bearer ") {
+			tokenString = strings.TrimSpace(strings.TrimPrefix(authz, "Bearer "))
+		}
+	}
+
+	if tokenString == "" {
+		var body struct {
+			Token string `json:"token"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		tokenString = strings.TrimSpace(body.Token)
+	}
+
+	if tokenString == "" {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	// Verify signature and standard time claims (exp/nbf) against key set (supports rotation).
+	var tok jwt.Token
+	var err error
+	if h.verifyKeySet == nil || h.verifyKeySet.Len() == 0 {
+		http.Error(w, "Service temporarily unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	tok, err = jwt.ParseString(tokenString, jwt.WithKeySet(h.verifyKeySet), jwt.WithValidate(false))
+	if err == nil {
+		err = jwt.Validate(tok)
+	}
+	if err != nil || tok == nil {
+		http.Error(w, "Invalid token", http.StatusUnauthorized)
+		return
+	}
+
+	// Extract minimum required claims for validation + revocation
+	var (
+		email string
+		iss   string
+		typ   string
+		jti   string
+		aud   any
+	)
+	if v, ok := tok.Get("email"); ok {
+		email, _ = v.(string)
+	}
+	if v, ok := tok.Get("iss"); ok {
+		iss, _ = v.(string)
+	}
+	if v, ok := tok.Get("type"); ok {
+		typ, _ = v.(string)
+	}
+	if v, ok := tok.Get("jti"); ok {
+		jti, _ = v.(string)
+	}
+	if v, ok := tok.Get("aud"); ok {
+		aud = v
+	}
+
+	// Validate issuer/type/audience (same rules as middleware).
+	if expectedIss := os.Getenv("JWT_ISSUER"); expectedIss != "" {
+		if iss != expectedIss {
+			http.Error(w, "Invalid token", http.StatusUnauthorized)
+			return
+		}
+	}
+	if expectedType := os.Getenv("JWT_TYPE"); expectedType != "" {
+		if typ != expectedType {
+			http.Error(w, "Invalid token", http.StatusUnauthorized)
+			return
+		}
+	}
+	// We mint aud=email; ensure it's present and matches.
+	if email == "" || (aud != nil && !audContains(aud, email)) {
+		http.Error(w, "Invalid token", http.StatusUnauthorized)
+		return
+	}
+
+	// Revocation check (fail closed).
+	if jti == "" {
+		http.Error(w, "Invalid token", http.StatusUnauthorized)
+		return
+	}
+	revoked, err := h.tokenRevokeRepo.IsTokenRevoked(r.Context(), jti)
+	if err != nil {
+		http.Error(w, "Service temporarily unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if revoked {
+		http.Error(w, "Invalid token", http.StatusUnauthorized)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	// Don't echo claims back (prevents token metadata probing).
+	_ = json.NewEncoder(w).Encode(map[string]any{"valid": true})
 }
 
 // VerifyEmail handles email verification using email, password and verification code

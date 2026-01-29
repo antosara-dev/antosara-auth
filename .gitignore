@@ -1,1 +1,46 @@
+# Environment files with secrets
 .env
+.env.local
+.env.*.local
+*.env
+
+# Secrets and keys
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+*.secret
+
+# AWS credentials
+.aws/
+aws-credentials.json
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+bin/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test coverage
+coverage/
+*.out
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.log

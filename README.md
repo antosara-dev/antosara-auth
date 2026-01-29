@@ -14,26 +14,35 @@ A secure authentication and user management system
 
 ## Environment Configuration
 
-Create a `.env` file in the project root with the following variables:
+**⚠️ SECURITY WARNING:** Never commit `.env` files or secrets to version control!
 
-```env
-# Database Configuration
-AWS_REGION=us-east-1
-DYNAMODB_TABLE_NAME=users
+1. Copy `.env.example` to `.env`:
+   ```bash
+   cp .env.example .env
+   ```
 
-# JWT Configuration
-SECRET_KEY=your-secret-key-here
+2. Fill in your actual values in `.env` (see `.env.example` for all available variables)
 
-# Email Configuration
-EMAIL_SENDER=noreply@yourdomain.com
-EMAIL_HOST=smtp.gmail.com
-EMAIL_HOST_USER=your-email@gmail.com
-EMAIL_HOST_PASSWORD=your-app-password
+3. **Important:** The `.env` file is gitignored. Never commit it or any files containing secrets.
 
-# Server Configuration
-HOST_NAME=localhost
-PORT=5000
-MODE=DEV
+### Required Environment Variables
+
+See `.env.example` for a complete template. Key variables:
+
+- **JWT Keys**: Generate RSA keys using `scripts/generate-rsa-keys.sh` (Linux/Mac) or `scripts/generate-rsa-keys.ps1` (Windows)
+- **AWS Credentials**: For DynamoDB and SES
+- **Email Configuration**: AWS SES SMTP credentials
+- **DynamoDB**: Region and optional local endpoint
+
+### Secrets Management Best Practices
+
+- ✅ Use `.env.example` as a template (committed to repo)
+- ✅ Keep `.env` local and gitignored
+- ✅ Use environment variables or secret management services (AWS Secrets Manager, HashiCorp Vault) in production
+- ✅ Rotate secrets regularly
+- ❌ Never commit `.env`, `.key`, `.pem`, or any files with secrets
+- ❌ Never hardcode secrets in source code
+- ❌ Never share secrets via email, chat, or unencrypted channels
 
 
 ## Dev Setup
@@ -50,6 +59,32 @@ Setup Caddy: https://caddyserver.com/docs/quick-starts/reverse-proxy
 caddy start
 ```
 
-Run/Debug cmd/antosara/main.go in VS Code/Cursor.
+Run/Debug cmd/antosara-auth/main.go in VS Code/Cursor.
 
 https://localhost/
+
+## Generating RSA Keys for JWT Signing
+
+To use RS256 (asymmetric) JWT signing, generate RSA key pairs:
+
+**Linux/Mac:**
+```bash
+chmod +x scripts/generate-rsa-keys.sh
+./scripts/generate-rsa-keys.sh
+```
+
+**Windows (PowerShell):**
+```powershell
+.\scripts\generate-rsa-keys.ps1
+```
+
+**Manual (using OpenSSL):**
+```bash
+# Generate private key
+openssl genrsa -out jwt_private_key.pem 2048
+
+# Extract public key
+openssl rsa -in jwt_private_key.pem -pubout -out jwt_public_key.pem
+```
+
+Add the private key content to `JWT_PRIVATE_KEY` in your `.env` file. The public key can be shared with other services that need to verify JWTs.

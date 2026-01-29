@@ -52,9 +52,6 @@ type TokenRevocationRepository interface {
 
 	// IsTokenRevoked checks if a token is revoked
 	IsTokenRevoked(ctx context.Context, jti string) (bool, error)
-
-	// CleanupExpiredRevocations removes expired token revocations
-	CleanupExpiredRevocations(ctx context.Context) error
 }
 
 // SessionCSRF represents the current CSRF token for a session (JWT jti).

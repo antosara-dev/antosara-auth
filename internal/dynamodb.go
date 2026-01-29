@@ -24,7 +24,21 @@ const (
 	usersTableName         = "Users"
 	revokedTokensTableName = "RevokedTokens"
 	sessionCSRFTablename   = "SessionCSRF"
+	revokedTokensTTLAttr   = "ttl" // DynamoDB TTL attribute name (unix seconds)
+	sessionCSRFTTLAttr     = "ttl" // DynamoDB TTL attribute name for SessionCSRF (unix seconds)
 )
+
+// verifyTableExists checks if a table exists without creating it
+// Tables must be created using scripts/create-tables.sh or scripts/create-tables.ps1
+func verifyTableExists(client *dynamodb.Client, tableName string) error {
+	_, err := client.DescribeTable(context.TODO(), &dynamodb.DescribeTableInput{
+		TableName: aws.String(tableName),
+	})
+	if err != nil {
+		return fmt.Errorf("table %s does not exist or is not accessible: %v. Create tables using scripts/create-tables.sh or scripts/create-tables.ps1", tableName, err)
+	}
+	return nil
+}
 
 // getDynamoDBClient creates a DynamoDB client with support for local DynamoDB
 func getDynamoDBClient() (*dynamodb.Client, error) {
@@ -70,6 +84,22 @@ type DynamoDBSessionCSRFRepository struct {
 	tableName string
 }
 
+func (r *DynamoDBSessionCSRFRepository) enableTTLBestEffort() {
+	// TTL is best-effort: DynamoDB Local may not support it, and AWS may return
+	// validation errors if already enabled/disabled. We never want to fail startup.
+	_, err := r.client.UpdateTimeToLive(context.TODO(), &dynamodb.UpdateTimeToLiveInput{
+		TableName: aws.String(r.tableName),
+		TimeToLiveSpecification: &types.TimeToLiveSpecification{
+			AttributeName: aws.String(sessionCSRFTTLAttr),
+			Enabled:       aws.Bool(true),
+		},
+	})
+	if err != nil {
+		// Don't fail startup; just log.
+		fmt.Printf("Warning: could not enable TTL on %s: %v\n", r.tableName, err)
+	}
+}
+
 func NewDynamoDBSessionCSRFRepository() (*DynamoDBSessionCSRFRepository, error) {
 	client, err := getDynamoDBClient()
 	if err != nil {
@@ -80,40 +110,16 @@ func NewDynamoDBSessionCSRFRepository() (*DynamoDBSessionCSRFRepository, error) 
 		client:    client,
 		tableName: sessionCSRFTablename,
 	}
-	if err := repo.createTableIfNotExists(); err != nil {
+
+	// Verify table exists (tables must be created using scripts/create-tables.sh or scripts/create-tables.ps1)
+	if err := verifyTableExists(client, repo.tableName); err != nil {
 		return nil, err
 	}
+
+	// Try to enable TTL (best-effort, won't fail if already enabled)
+	repo.enableTTLBestEffort()
+
 	return repo, nil
-}
-
-func (r *DynamoDBSessionCSRFRepository) createTableIfNotExists() error {
-	_, err := r.client.DescribeTable(context.TODO(), &dynamodb.DescribeTableInput{
-		TableName: aws.String(r.tableName),
-	})
-	if err == nil {
-		return nil
-	}
-
-	_, err = r.client.CreateTable(context.TODO(), &dynamodb.CreateTableInput{
-		TableName: aws.String(r.tableName),
-		AttributeDefinitions: []types.AttributeDefinition{
-			{
-				AttributeName: aws.String("JTI"),
-				AttributeType: types.ScalarAttributeTypeS,
-			},
-		},
-		KeySchema: []types.KeySchemaElement{
-			{
-				AttributeName: aws.String("JTI"),
-				KeyType:       types.KeyTypeHash,
-			},
-		},
-		BillingMode: types.BillingModePayPerRequest,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create session CSRF table: %v", err)
-	}
-	return nil
 }
 
 func (r *DynamoDBSessionCSRFRepository) Put(ctx context.Context, jti string, token string, expiresAt time.Time) error {
@@ -125,6 +131,10 @@ func (r *DynamoDBSessionCSRFRepository) Put(ctx context.Context, jti string, tok
 	if err != nil {
 		return fmt.Errorf("failed to marshal session csrf: %v", err)
 	}
+
+	// Add TTL attribute (unix seconds). DynamoDB will delete items automatically after expiry.
+	item[sessionCSRFTTLAttr] = &types.AttributeValueMemberN{Value: strconv.FormatInt(expiresAt.Unix(), 10)}
+
 	_, err = r.client.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: aws.String(r.tableName),
 		Item:      item,
@@ -188,65 +198,12 @@ func NewDynamoDBUserRepository() (*DynamoDBUserRepository, error) {
 		tableName: usersTableName,
 	}
 
-	// Create table if it doesn't exist
-	if err := repo.createTableIfNotExists(); err != nil {
+	// Verify table exists (tables must be created using scripts/create-tables.sh or scripts/create-tables.ps1)
+	if err := verifyTableExists(client, repo.tableName); err != nil {
 		return nil, err
 	}
 
 	return repo, nil
-}
-
-// createTableIfNotExists creates the DynamoDB table if it doesn't exist
-func (r *DynamoDBUserRepository) createTableIfNotExists() error {
-	// Check if table exists
-	_, err := r.client.DescribeTable(context.TODO(), &dynamodb.DescribeTableInput{
-		TableName: aws.String(r.tableName),
-	})
-	if err == nil {
-		// Table exists
-		return nil
-	}
-
-	// Create table
-	_, err = r.client.CreateTable(context.TODO(), &dynamodb.CreateTableInput{
-		TableName: aws.String(r.tableName),
-		AttributeDefinitions: []types.AttributeDefinition{
-			{
-				AttributeName: aws.String("Email"),
-				AttributeType: types.ScalarAttributeTypeS,
-			},
-			{
-				AttributeName: aws.String("ResetToken"),
-				AttributeType: types.ScalarAttributeTypeS,
-			},
-		},
-		KeySchema: []types.KeySchemaElement{
-			{
-				AttributeName: aws.String("Email"),
-				KeyType:       types.KeyTypeHash,
-			},
-		},
-		GlobalSecondaryIndexes: []types.GlobalSecondaryIndex{
-			{
-				IndexName: aws.String("ResetTokenIndex"),
-				KeySchema: []types.KeySchemaElement{
-					{
-						AttributeName: aws.String("ResetToken"),
-						KeyType:       types.KeyTypeHash,
-					},
-				},
-				Projection: &types.Projection{
-					ProjectionType: types.ProjectionTypeAll,
-				},
-			},
-		},
-		BillingMode: types.BillingModePayPerRequest,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create table: %v", err)
-	}
-
-	return nil
 }
 
 // GetUserByEmail retrieves a user by their email
@@ -414,6 +371,22 @@ type DynamoDBTokenRevocationRepository struct {
 	tableName string
 }
 
+func (r *DynamoDBTokenRevocationRepository) enableTTLBestEffort() {
+	// TTL is best-effort: DynamoDB Local may not support it, and AWS may return
+	// validation errors if already enabled/disabled. We never want to fail startup.
+	_, err := r.client.UpdateTimeToLive(context.TODO(), &dynamodb.UpdateTimeToLiveInput{
+		TableName: aws.String(r.tableName),
+		TimeToLiveSpecification: &types.TimeToLiveSpecification{
+			AttributeName: aws.String(revokedTokensTTLAttr),
+			Enabled:       aws.Bool(true),
+		},
+	})
+	if err != nil {
+		// Don't fail startup; just log.
+		fmt.Printf("Warning: could not enable TTL on %s: %v\n", r.tableName, err)
+	}
+}
+
 // NewDynamoDBTokenRevocationRepository creates a new DynamoDB token revocation repository
 func NewDynamoDBTokenRevocationRepository() (*DynamoDBTokenRevocationRepository, error) {
 	// Create DynamoDB client
@@ -428,47 +401,15 @@ func NewDynamoDBTokenRevocationRepository() (*DynamoDBTokenRevocationRepository,
 		tableName: revokedTokensTableName,
 	}
 
-	// Create table if it doesn't exist
-	if err := repo.createTableIfNotExists(); err != nil {
+	// Verify table exists (tables must be created using scripts/create-tables.sh or scripts/create-tables.ps1)
+	if err := verifyTableExists(client, repo.tableName); err != nil {
 		return nil, err
 	}
 
+	// Try to enable TTL (best-effort, won't fail if already enabled)
+	repo.enableTTLBestEffort()
+
 	return repo, nil
-}
-
-// createTableIfNotExists creates the DynamoDB table if it doesn't exist
-func (r *DynamoDBTokenRevocationRepository) createTableIfNotExists() error {
-	// Check if table exists
-	_, err := r.client.DescribeTable(context.TODO(), &dynamodb.DescribeTableInput{
-		TableName: aws.String(r.tableName),
-	})
-	if err == nil {
-		// Table exists
-		return nil
-	}
-
-	// Create table
-	_, err = r.client.CreateTable(context.TODO(), &dynamodb.CreateTableInput{
-		TableName: aws.String(r.tableName),
-		AttributeDefinitions: []types.AttributeDefinition{
-			{
-				AttributeName: aws.String("JTI"),
-				AttributeType: types.ScalarAttributeTypeS,
-			},
-		},
-		KeySchema: []types.KeySchemaElement{
-			{
-				AttributeName: aws.String("JTI"),
-				KeyType:       types.KeyTypeHash,
-			},
-		},
-		BillingMode: types.BillingModePayPerRequest,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create revoked tokens table: %v", err)
-	}
-
-	return nil
 }
 
 // RevokeToken marks a token as revoked
@@ -483,6 +424,9 @@ func (r *DynamoDBTokenRevocationRepository) RevokeToken(ctx context.Context, jti
 	if err != nil {
 		return fmt.Errorf("failed to marshal revoked token: %v", err)
 	}
+
+	// Add TTL attribute (unix seconds). DynamoDB will delete items automatically after expiry.
+	item[revokedTokensTTLAttr] = &types.AttributeValueMemberN{Value: strconv.FormatInt(expiresAt.Unix(), 10)}
 
 	_, err = r.client.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: aws.String(r.tableName),
@@ -509,41 +453,6 @@ func (r *DynamoDBTokenRevocationRepository) IsTokenRevoked(ctx context.Context, 
 
 	// If item exists, token is revoked
 	return result.Item != nil, nil
-}
-
-// CleanupExpiredRevocations removes expired token revocations
-func (r *DynamoDBTokenRevocationRepository) CleanupExpiredRevocations(ctx context.Context) error {
-	// Scan for all revoked tokens
-	result, err := r.client.Scan(ctx, &dynamodb.ScanInput{
-		TableName: aws.String(r.tableName),
-	})
-	if err != nil {
-		return fmt.Errorf("failed to scan revoked tokens: %v", err)
-	}
-
-	now := time.Now()
-	for _, item := range result.Items {
-		var revokedToken pkg.RevokedToken
-		if err := attributevalue.UnmarshalMap(item, &revokedToken); err != nil {
-			continue
-		}
-
-		// If token has expired, delete it
-		if now.After(revokedToken.ExpiresAt) {
-			_, err := r.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
-				TableName: aws.String(r.tableName),
-				Key: map[string]types.AttributeValue{
-					"JTI": &types.AttributeValueMemberS{Value: revokedToken.JTI},
-				},
-			})
-			if err != nil {
-				// Log error but continue cleanup
-				fmt.Printf("Failed to delete expired revocation for JTI %s: %v\n", revokedToken.JTI, err)
-			}
-		}
-	}
-
-	return nil
 }
 
 // DynamoDBResolutionRepository implements ResolutionRepository using DynamoDB
