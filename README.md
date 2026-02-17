@@ -1,11 +1,11 @@
 # Antosara Auth
 
-A Golang based service that provides API for secure authentication and user management (signup, login, email verification, password recovery).
-This is opinionated and assumes AWS DynamoDB backend and AWS Secrets Manager
+A **Go-based API service** for authentication and user management: signup, login, email verification, and password recovery. It issues **RS256 JWTs** that other services can verify (e.g. via the `/.well-known/jwks.json` endpoint or a shared public key) to protect their own APIs. Frontends and mobile apps call this service for login and profile; backends validate the bearer token and use the claims for identity.
 
-**Module path:** `github.com/antosara-dev/antosara-auth`
+**Stack:** Go, AWS DynamoDB (users, tokens, CSRF), AWS Secrets Manager (config), AWS SES (email). No local `.env` in production—config is loaded from a single secret at startup.
 
-**API documentation:** [API.md](API.md)
+- **API reference:** [API.md](API.md)
+- **Using this service (frontends, backends, token verification):** [SERVICE_USAGE.md](SERVICE_USAGE.md)
 
 ---
 

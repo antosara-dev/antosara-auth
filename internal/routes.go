@@ -39,6 +39,7 @@ func RegisterRoutes(authHandler *AuthHandler, r chi.Router) {
 			r.Post("/login", authHandler.Login)
 			// Token verification (public, rate-limited)
 			r.Post("/verify-token", authHandler.VerifyToken)
+			r.Post("/token/check-revocation", authHandler.CheckRevocation)
 			r.Post("/reset-password", authHandler.ResetPassword)
 			r.Post("/reset-password/confirm", authHandler.ConfirmResetPassword)
 		})

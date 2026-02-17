@@ -179,6 +179,33 @@ For **cookie-based** (browser) sessions, PUT and POST also require the **`X-CSRF
 
 ---
 
+### Check revocation (by jti)
+
+| Method | Path                         | Auth | Description                                                |
+|--------|------------------------------|------|------------------------------------------------------------|
+| `POST` | `/api/token/check-revocation`| No   | Check if a token is revoked by its JWT ID (`jti`). For use by services that already verified the JWT locally (e.g. via JWKS). Rate-limited. |
+
+**Request body:**
+
+```json
+{
+  "jti": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+**Success:** `200 OK`
+
+```json
+{
+  "revoked": true
+}
+```
+or `{"revoked": false}`.
+
+**Errors:** `400 Bad Request` (missing or empty `jti`); `503 Service Unavailable` (e.g. revocation store unavailable).
+
+---
+
 ### Reset password (request link)
 
 | Method | Path                 | Auth | Description                                                |
@@ -309,6 +336,7 @@ All protected routes require a valid JWT (cookie or `Authorization: Bearer`). Co
 | `POST` | `/api/verify-email`         | No      | Verify email with code         |
 | `POST` | `/api/login`                | No      | Login; set JWT + CSRF cookies  |
 | `POST` | `/api/verify-token`         | No      | Check JWT validity             |
+| `POST` | `/api/token/check-revocation` | No    | Check if jti is revoked        |
 | `POST` | `/api/reset-password`       | No      | Request password-reset email   |
 | `POST` | `/api/reset-password/confirm` | No    | Set new password with token    |
 | `GET`  | `/api/profile`              | JWT     | Get current user profile       |
@@ -330,4 +358,4 @@ All protected routes require a valid JWT (cookie or `Authorization: Bearer`). Co
 
 ## Rate limiting
 
-Auth-related endpoints (signup, verify-email, login, verify-token, reset-password, reset-password/confirm) and `/.well-known/jwks.json` are rate-limited per client IP (configurable via `RATE_LIMIT_REQUESTS_PER_MINUTE`). Excessive requests return `429 Too Many Requests`. Account lockout may also apply after repeated failed logins.
+Auth-related endpoints (signup, verify-email, login, verify-token, token/check-revocation, reset-password, reset-password/confirm) and `/.well-known/jwks.json` are rate-limited per client IP (configurable via `RATE_LIMIT_REQUESTS_PER_MINUTE`). Excessive requests return `429 Too Many Requests`. Account lockout may also apply after repeated failed logins.

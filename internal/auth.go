@@ -1274,6 +1274,30 @@ func (h *AuthHandler) VerifyToken(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"valid": true})
 }
 
+// CheckRevocation handles revocation check by jti (for other services that already verified the JWT).
+// POST /api/token/check-revocation with body {"jti": "<jti>"}. Returns {"revoked": true|false}.
+func (h *AuthHandler) CheckRevocation(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		JTI string `json:"jti"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	jti := strings.TrimSpace(body.JTI)
+	if jti == "" {
+		http.Error(w, "jti is required", http.StatusBadRequest)
+		return
+	}
+	revoked, err := h.tokenRevokeRepo.IsTokenRevoked(r.Context(), jti)
+	if err != nil {
+		http.Error(w, "Service temporarily unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]bool{"revoked": revoked})
+}
+
 // VerifyEmail handles email verification using email, password and verification code
 func (h *AuthHandler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
 	var verifyData struct {
