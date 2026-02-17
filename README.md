@@ -1,6 +1,6 @@
 # Antosara Auth
 
-A go module that provides API for secure authentication and user management (signup, login, email verification, password recovery).
+A Golang based service that provides API for secure authentication and user management (signup, login, email verification, password recovery).
 This is opinionated and assumes AWS DynamoDB backend and AWS Secrets Manager
 
 **Module path:** `github.com/antosara-dev/antosara-auth`
