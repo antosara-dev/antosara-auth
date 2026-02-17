@@ -1,7 +1,0 @@
-# Example: use this for DynamoDB Local
-# Copy to terraform.tfvars or pass -var-file=terraform.tfvars.local
-# Or set environment: export TF_VAR_use_local=true
-
-use_local         = true
-dynamodb_endpoint = "http://localhost:8000"
-aws_region        = "us-east-1"
