@@ -5,6 +5,8 @@ This is opinionated and assumes AWS DynamoDB backend and AWS Secrets Manager
 
 **Module path:** `github.com/antosara-dev/antosara-auth`
 
+**API documentation:** [API.md](API.md)
+
 ---
 
 ## How configuration works
