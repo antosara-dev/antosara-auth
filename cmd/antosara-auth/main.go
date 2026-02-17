@@ -89,14 +89,8 @@ func main() {
 	r.Use(middleware.CleanPath)
 	r.Use(middleware.GetHead)
 	r.Use(middleware.Throttle(100))
-	r.Use(middleware.Heartbeat("/ping"))
+	r.Use(middleware.Heartbeat("/health"))
 	r.Use(middleware.Timeout(60 * time.Second)) // Add request timeout
-
-	mode := os.Getenv("MODE")
-	if mode == "DEV" {
-		log.Println("********* RUNNING IN DEV MODE *********")
-		//r.Mount("/debug", middleware.Profiler())
-	}
 
 	// Initialize auth handler
 	// For RS256: use JWT_PRIVATE_KEY (RSA private key in PEM format)

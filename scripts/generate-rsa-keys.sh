@@ -21,5 +21,3 @@ echo "Public key (for JWT_PUBLIC_KEY - use in other services for verification):"
 echo "-----------------------------------"
 cat jwt_public_key.pem
 echo ""
-echo "Add JWT_PRIVATE_KEY to your .env file with the private key content"
-echo "Add JWT_PUBLIC_KEY to other services that need to verify JWTs"

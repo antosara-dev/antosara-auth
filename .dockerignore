@@ -1,0 +1,85 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+*.md
+!README.md
+docs/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Environment files (secrets should be passed via env vars or secrets)
+.env
+.env.local
+.env.*.local
+*.env
+
+# Build artifacts
+bin/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Test files
+*_test.go
+test/
+tests/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!terraform.tfvars.example
+terraform.tfvars.example
+
+# Scripts (not needed in container)
+scripts/
+
+# Docker files
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.circleci/
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Coverage reports
+coverage/
+*.coverprofile
+
+# Secrets and keys
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+*.secret
+.aws/
+
+# Caddyfile (if not needed in container)
+Caddyfile

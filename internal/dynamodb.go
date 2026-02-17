@@ -14,7 +14,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -40,33 +39,13 @@ func verifyTableExists(client *dynamodb.Client, tableName string) error {
 	return nil
 }
 
-// getDynamoDBClient creates a DynamoDB client with support for local DynamoDB
+// getDynamoDBClient creates a DynamoDB client using default AWS config (region from AWS_REGION).
 func getDynamoDBClient() (*dynamodb.Client, error) {
-	// If DYNAMODB_ENDPOINT is set, use it for local DynamoDB
-	endpoint := os.Getenv("DYNAMODB_ENDPOINT")
-
-	opts := []func(*config.LoadOptions) error{
-		config.WithRegion(getAWSRegion()),
-	}
-
-	if endpoint != "" {
-		// For local DynamoDB, use dummy credentials
-		opts = append(opts, config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("dummy", "dummy", "")))
-	}
-
-	cfg, err := config.LoadDefaultConfig(context.TODO(), opts...)
+	cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(getAWSRegion()))
 	if err != nil {
 		return nil, fmt.Errorf("unable to load SDK config: %v", err)
 	}
-
-	// Configure DynamoDB client options
-	clientOpts := []func(*dynamodb.Options){}
-	if endpoint != "" {
-		// Use EndpointResolverFromURL to point to local DynamoDB
-		clientOpts = append(clientOpts, dynamodb.WithEndpointResolver(dynamodb.EndpointResolverFromURL(endpoint)))
-	}
-
-	return dynamodb.NewFromConfig(cfg, clientOpts...), nil
+	return dynamodb.NewFromConfig(cfg), nil
 }
 
 // getAWSRegion returns the AWS region from environment or defaults to us-east-1

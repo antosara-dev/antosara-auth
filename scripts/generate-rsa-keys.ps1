@@ -20,5 +20,3 @@ Write-Host "Public key (for JWT_PUBLIC_KEY - use in other services for verificat
 Write-Host "-----------------------------------"
 Get-Content jwt_public_key.pem
 Write-Host ""
-Write-Host "Add JWT_PRIVATE_KEY to your .env file with the private key content" -ForegroundColor Cyan
-Write-Host "Add JWT_PUBLIC_KEY to other services that need to verify JWTs" -ForegroundColor Cyan

@@ -27,6 +27,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/jwtauth/v5"
 	"github.com/google/uuid"
+	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jwt"
 	"golang.org/x/crypto/bcrypt"
@@ -728,34 +729,53 @@ func CreateJWTToken(email string) (tokenString string, jti string, expiresAt tim
 	if err != nil {
 		return "", "", time.Time{}, fmt.Errorf("failed to load RSA private key: %v", err)
 	}
-
-	// Create new JWT auth with key
-	tokenAuth := jwtauth.New(algorithm, key, nil)
+	priv, ok := key.(*rsa.PrivateKey)
+	if !ok {
+		return "", "", time.Time{}, fmt.Errorf("JWT signing key is not an RSA private key")
+	}
+	// Sign with a JWK that has kid set so the token header includes key id for verification
+	signKey, err := jwk.FromRaw(priv)
+	if err != nil {
+		return "", "", time.Time{}, fmt.Errorf("failed to build JWK from private key: %v", err)
+	}
+	kid := rsaPublicKeyToJWK(&priv.PublicKey).Kid
+	if err := signKey.Set(jwk.KeyIDKey, kid); err != nil {
+		return "", "", time.Time{}, fmt.Errorf("failed to set kid on signing key: %v", err)
+	}
+	if err := signKey.Set(jwk.AlgorithmKey, algorithm); err != nil {
+		return "", "", time.Time{}, fmt.Errorf("failed to set alg on signing key: %v", err)
+	}
 
 	// Current time
 	now := time.Now()
 	jti = uuid.New().String()
 	expiresAt = now.Add(time.Duration(expiryHours) * time.Hour)
 
-	// Generate JWT token with enhanced security claims
-	_, tokenString, err = tokenAuth.Encode(map[string]interface{}{
-		// Standard claims
-		"sub": email,            // Subject (user identifier)
-		"iat": now.Unix(),       // Issued At
-		"exp": expiresAt.Unix(), // Expiration Time
-		"nbf": now.Unix(),       // Not Before
-		"jti": jti,              // JWT ID (unique identifier for the token)
-
-		// Custom claims
-		"email": email,                   // User's email
-		"iss":   os.Getenv("JWT_ISSUER"), // Issuer
-		"aud":   email,                   // Audience (specific to the user)
-		"type":  os.Getenv("JWT_TYPE"),   // Token type
-	})
-
-	if err != nil {
-		return "", "", time.Time{}, fmt.Errorf("failed to create JWT token: %v", err)
+	// Build token and set claims
+	tok := jwt.New()
+	claims := map[string]interface{}{
+		"sub":   email,
+		"iat":   now.Unix(),
+		"exp":   expiresAt.Unix(),
+		"nbf":   now.Unix(),
+		"jti":   jti,
+		"email": email,
+		"iss":   os.Getenv("JWT_ISSUER"),
+		"aud":   email,
+		"type":  os.Getenv("JWT_TYPE"),
 	}
+	for k, v := range claims {
+		if err := tok.Set(k, v); err != nil {
+			return "", "", time.Time{}, fmt.Errorf("failed to set claim %s: %v", k, err)
+		}
+	}
+
+	// Sign with JWK so kid appears in the JWS header
+	payload, err := jwt.Sign(tok, jwt.WithKey(jwa.RS256, signKey))
+	if err != nil {
+		return "", "", time.Time{}, fmt.Errorf("failed to sign JWT: %v", err)
+	}
+	tokenString = string(payload)
 
 	return tokenString, jti, expiresAt, nil
 }

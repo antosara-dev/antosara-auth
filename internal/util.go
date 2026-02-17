@@ -1,47 +1,74 @@
 package internal
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"log"
 	"net/smtp"
 	"os"
-	"path/filepath"
+	"strings"
 
-	"github.com/joho/godotenv"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 )
 
-// LoadEnv loads environment variables based on the mode
-// If mode is "DEV", it loads from .env file
-// If mode is "PROD", it assumes environment variables are already set
+// LoadEnv loads environment variables from AWS Secrets Manager only.
+// Local .env is never read. Set AWS_SECRET_ARN or AWS_SECRET_NAME (and AWS_REGION
+// if needed); the app fetches the secret and sets each key-value pair in the process env.
 func LoadEnv() error {
-	mode := os.Getenv("MODE")
-	if mode == "" {
-		mode = "DEV" // Default to DEV mode if not specified
+	secretID := os.Getenv("AWS_SECRET_ARN")
+	if secretID == "" {
+		secretID = os.Getenv("AWS_SECRET_NAME")
 	}
-
-	if mode == "DEV" {
-		// Get the current working directory
-		wd, err := os.Getwd()
-		if err != nil {
-			return err
-		}
-
-		// If we're in cmd/antosara, go up two levels to reach project root
-		if filepath.Base(wd) == "antosara-auth" && filepath.Base(filepath.Dir(wd)) == "cmd" {
-			wd = filepath.Dir(filepath.Dir(wd))
-		}
-
-		// Load .env file from project root
-		envPath := filepath.Join(wd, ".env")
-		if err := godotenv.Load(envPath); err != nil {
-			return err
-		}
-		log.Printf("Loaded environment variables from %s", envPath)
-	} else if mode == "PROD" {
-		log.Println("Running in PROD mode - using system environment variables")
-	} else {
-		log.Printf("Warning: Unknown mode '%s', defaulting to system environment variables", mode)
+	if secretID == "" {
+		return fmt.Errorf("AWS_SECRET_ARN or AWS_SECRET_NAME must be set (local .env is not used)")
 	}
+	if err := loadSecretIntoEnv(secretID); err != nil {
+		return fmt.Errorf("load secret into env: %w", err)
+	}
+	log.Println("Loaded environment from AWS Secrets Manager")
+	return nil
+}
 
+// loadSecretIntoEnv fetches the secret from AWS Secrets Manager and sets each
+// key-value pair in the secret (JSON object) as an environment variable.
+func loadSecretIntoEnv(secretID string) error {
+	region := os.Getenv("AWS_REGION")
+	if region == "" {
+		region = "us-west-2"
+	}
+	ctx := context.Background()
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	if err != nil {
+		return fmt.Errorf("aws config: %w", err)
+	}
+	client := secretsmanager.NewFromConfig(cfg)
+	out, err := client.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{
+		SecretId: &secretID,
+	})
+	if err != nil {
+		return fmt.Errorf("get secret: %w", err)
+	}
+	if out.SecretString == nil || *out.SecretString == "" {
+		return fmt.Errorf("secret value is empty")
+	}
+	var kv map[string]interface{}
+	if err := json.Unmarshal([]byte(*out.SecretString), &kv); err != nil {
+		return fmt.Errorf("secret is not valid JSON: %w", err)
+	}
+	for k, v := range kv {
+		if k == "" {
+			continue
+		}
+		val := fmt.Sprint(v)
+		if k == "JWT_PRIVATE_KEY" || k == "JWT_PUBLIC_KEY" {
+			val = strings.ReplaceAll(val, "\\n", "\n")
+		}
+		if err := os.Setenv(k, val); err != nil {
+			return fmt.Errorf("setenv %s: %w", k, err)
+		}
+	}
 	return nil
 }
 
@@ -68,7 +95,8 @@ func sendPasswordResetEmail(toEmail, resetToken string) error {
 	subject := "Reset Your Password"
 	body := "Somebody requested a password reset for your account. If you did not request this, please ignore this email.\n\n" +
 		"Click the following link to reset your password:\n\n" +
-		"https://" + os.Getenv("HOST_NAME") + "/web/new-password.html?token=" + resetToken + "\n\n" +
+		os.Getenv("PASSWORD_RESET_URL") + "?token=" + resetToken + "\n\n" +
+		//"https://" + os.Getenv("HOST_NAME") + "/web/new-password.html?token=" + resetToken + "\n\n" +
 		"If you didn't request this, please ignore this email."
 
 	fromEmail := os.Getenv("EMAIL_SENDER")
