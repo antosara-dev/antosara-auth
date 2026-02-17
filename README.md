@@ -1,20 +1,18 @@
 # Antosara Auth
 
-API service for secure authentication and user management (signup, login, email verification, password recovery).
-This is opinionated to use AWS DynamoDB backend and AWS Secrets Manager
+A go module that provides API for secure authentication and user management (signup, login, email verification, password recovery).
+This is opinionated and assumes AWS DynamoDB backend and AWS Secrets Manager
 
 **Module path:** `github.com/antosara-dev/antosara-auth`
-
-> See [MODULE_USAGE.md](./MODULE_USAGE.md) for using this module in other projects.
 
 ---
 
 ## How configuration works
 
-The service does **not** read a local `.env` file. It loads all configuration from **AWS Secrets Manager** at startup.
+The service does **not** read a local `.env` file though `.env.example` is provided for a list of environment variables required. It loads all configuration from **AWS Secrets Manager** at startup.
 
 - You set **only** `AWS_REGION` and `AWS_SECRET_ARN` (or `AWS_SECRET_NAME`) in the environment.
-- The app fetches the secret, parses it as JSON, and sets each key–value pair as environment variables.
+- The app fetches the secret, and sets each key–value pair as environment variables.
 - All other settings (JWT keys, email, CORS, etc.) live **inside that secret**; see [Secret format](#secret-format) below.
 
 For a full list of variable names and meanings, see [.env.example](.env.example).
@@ -23,18 +21,19 @@ For a full list of variable names and meanings, see [.env.example](.env.example)
 
 ## Local: run with Docker
 
-Use Docker Compose to run the auth service locally. It needs to talk to AWS (Secrets Manager, DynamoDB, SES), so you must have AWS credentials and point to your secret.
+Use the provided Docker Compose to run the auth service **locally**. It needs to talk to AWS (Secrets Manager, DynamoDB, SES), so you must have AWS credentials and point to your secret.
 
 ### 1. Create the secret in AWS Secrets Manager
 
-Create a secret whose value is a **JSON object** with all required keys (see [Secret format](#secret-format)). Use the same secret name/ARN for local and production if you want, or a dedicated “dev” secret.
+Create a secret whose value is a **JSON object** with all required keys (see [Secret format](#secret-format)). It is recommended to keep
+dev and prod secrets separate.
 
-### 2. Configure Docker Compose
+### 2. Configure Docker Compose (**local dev**)
 
 Edit [docker-compose.yml](docker-compose.yml) and set:
 
 - **AWS_REGION** – e.g. `us-west-2`
-- **AWS_SECRET_ARN** – your secret’s name or full ARN (e.g. `antosara-auth/dev` or the ARN from the console)
+- **AWS_SECRET_ARN** – your secret’s name or full ARN (copy the secret ARN from the AWS console)
 
 Credentials are provided by mounting your host `~/.aws` into the container so the app can call Secrets Manager, DynamoDB, and SES. No `.env` file is required for the app; the app always loads config from the secret.
 
@@ -72,7 +71,7 @@ Add `env_file: [ .env ]` under the service in `docker-compose.yml` if you prefer
 
 ## Production: no .env, only AWS Secrets
 
-In production you do **not** use a `.env` file. You only set two things in the deployment environment (e.g. ECS task definition, Kubernetes deployment, or your host’s env):
+In production you do **not** use a `.env` file. You only set two things in the deployment environment (e.g. ECS, Kubernetes deployment, or your host’s env):
 
 | Variable           | Description                          |
 |-------------------|--------------------------------------|
@@ -84,7 +83,7 @@ All other configuration (JWT keys, `EMAIL_*`, `HOST_NAME`, `CORS_ORIGINS`, etc.)
 ### Credentials in production
 
 - **Service runs on AWS (ECS, EKS, App Runner, etc.):** Attach an IAM role to the task/pod with the permissions below. Do **not** set `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`.
-- **Service runs outside AWS:** Inject AWS credentials via your platform’s secret mechanism (e.g. env vars from a secret store). Use an IAM user with the permissions below. Do **not** mount `~/.aws` or commit keys.
+- **Service runs outside AWS:** Inject AWS credentials via your platform’s secret mechanism (e.g. env vars from a secret store, kubernetes secrets etc). Use an IAM user with the permissions below. Do **not** mount `~/.aws` or commit keys.
 
 ### Required IAM permissions
 
@@ -121,8 +120,18 @@ If using SES SMTP for email, follow instructions to setup the SMTP interface htt
   "Statement": [
     {
       "Effect": "Allow",
-      "Action": "secretsmanager:GetSecretValue",
+      "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+      ],
       "Resource": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:SECRET_ARN"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:Query"
+      ],
+      "Resource": "arn:aws:dynamodb:REGION:ACCOUNT:table/*/index/*"
     },
     {
       "Effect": "Allow",
@@ -133,12 +142,11 @@ If using SES SMTP for email, follow instructions to setup the SMTP interface htt
         "dynamodb:UpdateItem",
         "dynamodb:DeleteItem",
         "dynamodb:Query",
-        "dynamodb:UpdateTimeToLive"
+        "dynamodb:UpdateTimeToLive",
+        "dynamodb:DescribeTimeToLive"
       ],
       "Resource": [
-        "arn:aws:dynamodb:REGION:ACCOUNT:table/Users",
-        "arn:aws:dynamodb:REGION:ACCOUNT:table/RevokedTokens",
-        "arn:aws:dynamodb:REGION:ACCOUNT:table/SessionCSRF"
+        "arn:aws:dynamodb:REGION:ACCOUNT:table/*"
       ]
     }
   ]
@@ -178,13 +186,13 @@ Example (minimal):
 {
   "JWT_PRIVATE_KEY": "-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----",
   "JWT_PUBLIC_KEY": "-----BEGIN PUBLIC KEY-----\nMIIB...\n-----END PUBLIC KEY-----",
-  "AWS_REGION": "us-west-2",
+  "AWS_REGION": "REGION",
   "HOST_NAME": "auth.example.com",
   "JWT_ISSUER": "https://auth.example.com",
   "JWT_TYPE": "access",
   "JWT_ALGORITHM": "RS256",
   "JWT_EXPIRY_HOURS": "24",
-  "EMAIL_HOST": "email-smtp.us-east-1.amazonaws.com",
+  "EMAIL_HOST": "email-smtp.REGION.amazonaws.com",
   "EMAIL_HOST_PORT": "587",
   "EMAIL_HOST_USER": "...",
   "EMAIL_HOST_PASSWORD": "...",
