@@ -3,6 +3,7 @@ package internal
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/smtp"
@@ -11,24 +12,46 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/joho/godotenv"
 )
 
-// LoadEnv loads environment variables from AWS Secrets Manager only.
-// Local .env is never read. Set AWS_SECRET_ARN or AWS_SECRET_NAME (and AWS_REGION
-// if needed); the app fetches the secret and sets each key-value pair in the process env.
+// LoadEnv loads configuration into the process environment.
+// A local .env file is loaded first if present (existing process env wins over
+// .env). If AWS_SECRET_ARN or AWS_SECRET_NAME is set after that, the secret is
+// fetched from AWS Secrets Manager and overwrites matching variables.
 func LoadEnv() error {
+	if err := godotenv.Load(); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("load .env: %w", err)
+		}
+	} else {
+		log.Println("Loaded environment from .env")
+	}
+
 	secretID := os.Getenv("AWS_SECRET_ARN")
 	if secretID == "" {
 		secretID = os.Getenv("AWS_SECRET_NAME")
 	}
-	if secretID == "" {
-		return fmt.Errorf("AWS_SECRET_ARN or AWS_SECRET_NAME must be set (local .env is not used)")
+	if secretID != "" {
+		if err := loadSecretIntoEnv(secretID); err != nil {
+			return fmt.Errorf("load secret into env: %w", err)
+		}
+		log.Println("Loaded environment from AWS Secrets Manager")
+	} else {
+		log.Println("Using process environment (AWS Secrets Manager not configured)")
 	}
-	if err := loadSecretIntoEnv(secretID); err != nil {
-		return fmt.Errorf("load secret into env: %w", err)
-	}
-	log.Println("Loaded environment from AWS Secrets Manager")
+	unescapeJWTKeys()
 	return nil
+}
+
+// unescapeJWTKeys turns literal \n sequences in PEM env vars into real newlines
+// so keys work the same whether they come from Secrets Manager JSON or process env.
+func unescapeJWTKeys() {
+	for _, k := range []string{"JWT_PRIVATE_KEY", "JWT_PUBLIC_KEY", "JWT_PUBLIC_KEYS"} {
+		if v := os.Getenv(k); v != "" {
+			_ = os.Setenv(k, strings.ReplaceAll(v, `\n`, "\n"))
+		}
+	}
 }
 
 // loadSecretIntoEnv fetches the secret from AWS Secrets Manager and sets each
@@ -62,9 +85,6 @@ func loadSecretIntoEnv(secretID string) error {
 			continue
 		}
 		val := fmt.Sprint(v)
-		if k == "JWT_PRIVATE_KEY" || k == "JWT_PUBLIC_KEY" {
-			val = strings.ReplaceAll(val, "\\n", "\n")
-		}
 		if err := os.Setenv(k, val); err != nil {
 			return fmt.Errorf("setenv %s: %w", k, err)
 		}

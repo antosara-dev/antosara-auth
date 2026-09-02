@@ -1,29 +1,57 @@
 # Antosara Auth
 
-A **Go-based API service** for authentication and user management: signup, login, email verification, and password recovery. It issues **RS256 JWTs** that other services can verify (e.g. via the `/.well-known/jwks.json` endpoint or a shared public key) to protect their own APIs. Frontends and mobile apps call this service for login and profile; backends validate the bearer token and use the claims for identity.
+A **Go-based API service** for authentication and user management: signup, login, email verification, and password recovery. It issues **RS256 JWTs** that other services can verify (e.g. via the `/.well-known/jwks.json` endpoint or a shared public key) to protect their own APIs. Frontends and mobile apps can call this service for login and profile while backends can validate the bearer token and use the claims for identity.
 
-**Stack:** Go, AWS DynamoDB (users, tokens, CSRF), AWS Secrets Manager (config), AWS SES (email). No local `.env` in production—config is loaded from a single secret at startup.
+**Stack:** Go; storage backends DynamoDB, PostgreSQL, and SQLite (users, tokens, CSRF); optional AWS Secrets Manager (config); SMTP/SES (email). Configuration comes from the process environment and an optional local `.env`, or from a single Secrets Manager secret if `AWS_SECRET_ARN` / `AWS_SECRET_NAME` is set.
 
 - **API reference:** [API.md](API.md)
 - **Using this service (frontends, backends, token verification):** [SERVICE_USAGE.md](SERVICE_USAGE.md)
 
 ---
 
-## How configuration works
+## Configuration
 
-The service does **not** read a local `.env` file though `.env.example` is provided for a list of environment variables required. It loads all configuration from **AWS Secrets Manager** at startup.
+Config is loaded at startup in this order:
 
-- You set **only** `AWS_REGION` and `AWS_SECRET_ARN` (or `AWS_SECRET_NAME`) in the environment.
-- The app fetches the secret, and sets each key–value pair as environment variables.
-- All other settings (JWT keys, email, CORS, etc.) live **inside that secret**; see [Secret format](#secret-format) below.
+1. **Process environment** (Docker, Kubernetes, systemd, exported shell vars).
+2. **Local `.env`** in the working directory, if present. Already-set process variables are not overwritten. Copy [.env.example](.env.example) to `.env` for local development.
+3. **AWS Secrets Manager** (optional). If `AWS_SECRET_ARN` or `AWS_SECRET_NAME` is set, the secret is fetched and overwrites matching variables. Other settings (JWT keys, email, CORS, etc.) live **inside that secret**; see [Secret format](#secret-format).
 
 For a full list of variable names and meanings, see [.env.example](.env.example).
 
 ---
 
+## Database backends
+
+Set `DB_BACKEND` to choose storage. The default is `dynamodb`. PostgreSQL and SQLite create their schema on startup; DynamoDB tables must already exist.
+
+| `DB_BACKEND` | Use | Required settings |
+|---|---|---|
+| `dynamodb` (default) | AWS DynamoDB tables `Users`, `RevokedTokens`, `SessionCSRF` | `AWS_REGION` (and AWS credentials). Tables must exist; see `scripts/terraform`. |
+| `postgres` | PostgreSQL | `DATABASE_URL`, or `POSTGRES_HOST` + `POSTGRES_USER` + `POSTGRES_DB` (optional `POSTGRES_PORT`, `POSTGRES_PASSWORD`, `POSTGRES_SSLMODE`). |
+| `sqlite` (alias `sqlite3`) | SQLite file (or in-memory DSN) | `SQLITE_PATH`, `SQLITE_DSN`, or `DATABASE_URL`. |
+
+Examples:
+
+```bash
+# DynamoDB (default)
+DB_BACKEND=dynamodb
+AWS_REGION=us-west-2
+
+# PostgreSQL
+DB_BACKEND=postgres
+DATABASE_URL=postgres://antosara:password@localhost:5432/antosara_auth?sslmode=disable
+
+# SQLite
+DB_BACKEND=sqlite
+SQLITE_PATH=./data/antosara-auth.db
+```
+
+---
+
 ## Local: run with Docker
 
-Use the provided Docker Compose to run the auth service **locally**. It needs to talk to AWS (Secrets Manager, DynamoDB, SES), so you must have AWS credentials and point to your secret.
+Use the provided Docker Compose to run the auth service **locally**. You can inject config via Compose `environment` / `env_file`, or load it from AWS Secrets Manager.
 
 ### 1. Create the secret in AWS Secrets Manager
 
@@ -37,7 +65,7 @@ Edit [docker-compose.yml](docker-compose.yml) and set:
 - **AWS_REGION** – e.g. `us-west-2`
 - **AWS_SECRET_ARN** – your secret’s name or full ARN (copy the secret ARN from the AWS console)
 
-Credentials are provided by mounting your host `~/.aws` into the container so the app can call Secrets Manager, DynamoDB, and SES. No `.env` file is required for the app; the app always loads config from the secret.
+If you use Secrets Manager, credentials are provided by mounting your host `~/.aws` into the container. If you inject all config via `environment` or `env_file` instead, omit `AWS_SECRET_ARN` / `AWS_SECRET_NAME`.
 
 ### 3. Run
 
@@ -60,20 +88,24 @@ docker compose down
 
 ### Optional: override without editing compose
 
-To avoid putting your secret ARN in the repo, you can use a `.env` file **only for Docker Compose** (Compose injects it into the container). Create a `.env` in the project root with:
+To avoid putting secrets in the repo, use a `.env` file. Compose reads `.env` for variable substitution, and the app also loads `.env` from the working directory when you run locally. For the container, add `env_file: [ .env ]` under the service in `docker-compose.yml` (the image does not include `.env`).
 
 ```bash
 AWS_REGION=us-west-2
 AWS_SECRET_ARN=your-secret-name-or-arn
 ```
 
-Add `env_file: [ .env ]` under the service in `docker-compose.yml` if you prefer this over hardcoding in `environment`. The **application** still ignores `.env` and loads everything from Secrets Manager; this only supplies the two variables the container needs to find the secret.
+If `AWS_SECRET_ARN` / `AWS_SECRET_NAME` is set, the app overlays config from Secrets Manager; otherwise it uses the environment (and `.env`) as-is.
 
 ---
 
-## Production: no .env, only AWS Secrets
+## Production
 
-In production you do **not** use a `.env` file. You only set two things in the deployment environment (e.g. ECS, Kubernetes deployment, or your host’s env):
+In production you typically do **not** ship a `.env` file. Inject configuration as environment variables (Kubernetes secrets, ECS task definition, etc.) or via AWS Secrets Manager.
+
+**Process environment:** set the variables from [.env.example](.env.example) and leave `AWS_SECRET_ARN` / `AWS_SECRET_NAME` unset.
+
+**AWS Secrets Manager:** set only:
 
 | Variable           | Description                          |
 |-------------------|--------------------------------------|
@@ -89,7 +121,7 @@ All other configuration (JWT keys, `EMAIL_*`, `HOST_NAME`, `CORS_ORIGINS`, etc.)
 
 ### Required IAM permissions
 
-The IAM user or role used by the auth service (task role, instance profile, or injected credentials) must have at least the following.
+The IAM user or role used by the auth service (task role, instance profile, or injected credentials) must have at least the following when you use AWS services. DynamoDB permissions apply only if `DB_BACKEND=dynamodb`. Secrets Manager permissions apply only if you load config from a secret.
 
 **Secrets Manager**
 
@@ -159,17 +191,19 @@ If using SES SMTP for email, follow instructions to setup the SMTP interface htt
 
 **Secrets & config**
 
-- [ ] Secret created in AWS Secrets Manager with all required keys (see [Secret format](#secret-format)).
-- [ ] Secret contains JWT keys, email config, `HOST_NAME`, `JWT_ISSUER`, and any CORS/cookie/password-reset URL you need.
-- [ ] Only `AWS_REGION` and `AWS_SECRET_ARN` (or `AWS_SECRET_NAME`) are set in the run environment; no `.env` file in production.
+- [ ] All required keys are available: either as process environment variables or inside an AWS Secrets Manager secret (see [Secret format](#secret-format)).
+- [ ] Config includes JWT keys, email settings, `HOST_NAME`, `JWT_ISSUER`, and any CORS/cookie/password-reset URL you need.
+- [ ] No `.env` file committed or baked into the image. If using Secrets Manager, only `AWS_REGION` and `AWS_SECRET_ARN` (or `AWS_SECRET_NAME`) need to be set in the run environment.
 
-**IAM**
+**IAM** (when `DB_BACKEND=dynamodb`, and when using Secrets Manager or SES)
 
-- [ ] IAM role or user has the [required permissions](#required-iam-permissions): Secrets Manager (`GetSecretValue`), DynamoDB (tables `Users`, `RevokedTokens`, `SessionCSRF`), and SES (`SendRawEmail`).
+- [ ] IAM role or user has the [required permissions](#required-iam-permissions) for DynamoDB (tables `Users`, `RevokedTokens`, `SessionCSRF`). Include Secrets Manager (`GetSecretValue`) only if you load config from a secret. Include SES (`SendRawEmail`) if you send mail via SES.
 
 **Infrastructure**
 
-- [ ] DynamoDB tables `Users`, `RevokedTokens`, and `SessionCSRF` exist in the same region (e.g. via [scripts/terraform](scripts/terraform)).
+- [ ] **DynamoDB:** tables `Users`, `RevokedTokens`, and `SessionCSRF` exist in the same region (e.g. via [scripts/terraform](scripts/terraform)).
+- [ ] **PostgreSQL:** database exists and the service can connect (`DATABASE_URL` or `POSTGRES_*`). Schema is created on startup.
+- [ ] **SQLite:** `SQLITE_PATH` / `SQLITE_DSN` is writable. Schema is created on startup.
 
 **Production hardening**
 
@@ -243,7 +277,7 @@ openssl genrsa -out jwt_private_key.pem 2048
 openssl rsa -in jwt_private_key.pem -pubout -out jwt_public_key.pem
 ```
 
-Put the PEM contents into the corresponding keys in your **AWS Secrets Manager** secret (for production and for local Docker, since the app always uses the secret).
+Put the PEM contents into `JWT_PRIVATE_KEY` and `JWT_PUBLIC_KEY` in the process environment, or in your AWS Secrets Manager secret if you use one.
 
 ---
 
@@ -253,11 +287,11 @@ Put the PEM contents into the corresponding keys in your **AWS Secrets Manager**
 docker build -t antosara-auth:latest .
 ```
 
-To run the built image you must set `AWS_REGION` and `AWS_SECRET_ARN` (or `AWS_SECRET_NAME`) and provide AWS credentials (e.g. IAM role or env vars). All other config comes from the secret.
+To run the built image, provide configuration as environment variables (see [.env.example](.env.example)). If you use Secrets Manager, set `AWS_REGION` and `AWS_SECRET_ARN` (or `AWS_SECRET_NAME`) and provide AWS credentials (IAM role or env vars); all other config then comes from the secret.
 
 ---
 
 ## Other
 
-- **DynamoDB:** Tables must exist in AWS. See `scripts/terraform` for examples.
-- **Local dev without Docker:** Run `cmd/antosara-auth/main.go` (e.g. from VS Code/Cursor). You still need `AWS_REGION` and `AWS_SECRET_ARN` set in the environment and credentials (e.g. `~/.aws` or env) so the app can fetch the secret.
+- **Database:** DynamoDB tables must exist in AWS (`scripts/terraform`). PostgreSQL and SQLite create schema on startup; see [Database backends](#database-backends).
+- **Local dev without Docker:** Copy `.env.example` to `.env`, fill in values (including `DB_BACKEND`), and run `cmd/antosara-auth/main.go` (e.g. from VS Code/Cursor). If `AWS_SECRET_ARN` or `AWS_SECRET_NAME` is set, you also need AWS credentials (e.g. `~/.aws` or env) so the app can fetch the secret.

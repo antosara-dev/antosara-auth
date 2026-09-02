@@ -39,21 +39,17 @@ func main() {
 		log.Fatalf("Failed to load environment variables: %v", err)
 	}
 
-	// Initialize DynamoDB repositories AFTER loading environment variables
-	userRepo, err := internal.NewDynamoDBUserRepository()
+	// Initialize repositories for the configured backend (DB_BACKEND: dynamodb, postgres, or sqlite)
+	userRepo, tokenRevokeRepo, csrfRepo, err := internal.NewRepositories()
 	if err != nil {
-		log.Fatalf("Failed to initialize DynamoDB repository: %v", err)
+		log.Fatalf("Failed to initialize repositories: %v", err)
 	}
 
-	tokenRevokeRepo, err := internal.NewDynamoDBTokenRevocationRepository()
-	if err != nil {
-		log.Fatalf("Failed to initialize token revocation repository: %v", err)
+	backend := os.Getenv("DB_BACKEND")
+	if backend == "" {
+		backend = "dynamodb"
 	}
-
-	csrfRepo, err := internal.NewDynamoDBSessionCSRFRepository()
-	if err != nil {
-		log.Fatalf("Failed to initialize CSRF repository: %v", err)
-	}
+	log.Printf("Database backend: %s", backend)
 
 	// Create a new Chi router
 	r := chi.NewRouter()
