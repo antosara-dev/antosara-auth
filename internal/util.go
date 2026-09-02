@@ -44,6 +44,17 @@ func LoadEnv() error {
 	return nil
 }
 
+// envEnabled reports whether an env var is truthy. Unset or empty is false.
+// Accepted true values: 1, true, yes, on (case-insensitive).
+func envEnabled(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 // unescapeJWTKeys turns literal \n sequences in PEM env vars into real newlines
 // so keys work the same whether they come from Secrets Manager JSON or process env.
 func unescapeJWTKeys() {

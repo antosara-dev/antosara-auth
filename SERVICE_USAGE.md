@@ -9,7 +9,7 @@
 Deploy and run the auth service (see [README.md](README.md)). Other services do **not** import or embed it; they talk to it over HTTP.
 
 - **Base URL:** e.g. `https://auth.yourdomain.com` (your auth service origin).
-- **API:** [API.md](API.md) describes all endpoints (signup, login, verify-token, profile, logout, etc.).
+- **API:** [API.md](API.md) describes all endpoints (signup, login, profile, logout, etc.).
 
 ---
 
@@ -69,7 +69,7 @@ Verify signature and standard claims, then use `email` / `sub` for identity.
 - **Audience:** The auth service can set `aud` (e.g. to the user’s email). Optionally enforce `aud` in your APIs.
 - **Revocation:** The auth service revokes tokens on logout and stores them (e.g. in DynamoDB). To respect revocation in **your** service you can:
   - **Check by jti (recommended):** After verifying the JWT locally (e.g. via JWKS), call **POST /api/token/check-revocation** with body `{"jti": "<jti>"}`. Response is `{"revoked": true}` or `{"revoked": false}`. One lightweight call per request (or cache per jti with short TTL).
-  - **Full token check:** Call **POST /api/verify-token** with the bearer token; it validates signature, claims, and revocation and returns `{"valid": true}`. Use this if you prefer not to verify the JWT yourself.
+  - **Full token check (opt-in):** If the auth service has `ENABLE_VERIFY_TOKEN` set, call **POST /api/verify-token** with the bearer token; it validates signature, claims, and revocation and returns `{"valid": true}`. Disabled by default; prefer JWKS + check-revocation.
   - **Go:** Use the provided client: `import "github.com/antosara-dev/antosara-auth/pkg/client"` and call `client.CheckRevoked(ctx, authServiceBaseURL, jti)` (see section 5).
 
 ---
@@ -90,7 +90,7 @@ Verify signature and standard claims, then use `email` / `sub` for identity.
 - **`pkg` package:** Types and interfaces used by the auth service:
   - `User`, `UserRepository`, `TokenRevocationRepository`, `SessionCSRFRepository`, and shared errors.
   - Import `github.com/antosara-dev/antosara-auth/pkg` if you need the same types (e.g. to implement a custom repository). The auth service’s **HTTP handlers** live in `internal`, which is **not** importable by other modules.
-- **Depending on the module:** If the repo is private, set `GOPRIVATE` and use a token or `replace` in `go.mod` as needed.
+
 
 Most consumers only need the HTTP API and JWT verification (sections 2 and 3); use `pkg/client` when you want revocation checks from Go without building the request yourself.
 

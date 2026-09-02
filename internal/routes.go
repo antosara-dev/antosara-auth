@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/antosara-dev/antosara-auth/internal/web"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/jwtauth/v5"
 )
@@ -16,6 +17,9 @@ func RegisterRoutes(authHandler *AuthHandler, r chi.Router) {
 	if err != nil {
 		log.Printf("Error getting working directory: %v", err)
 	}
+
+	// Local dev only: serve embedded password reset page at PASSWORD_RESET_URL path
+	web.RegisterDevPasswordResetPage(r)
 
 	// Standards-based public JWKS endpoint (rate-limited)
 	r.Group(func(r chi.Router) {
@@ -37,8 +41,11 @@ func RegisterRoutes(authHandler *AuthHandler, r chi.Router) {
 			r.Post("/signup", authHandler.Signup)
 			r.Post("/verify-email", authHandler.VerifyEmail)
 			r.Post("/login", authHandler.Login)
-			// Token verification (public, rate-limited)
-			r.Post("/verify-token", authHandler.VerifyToken)
+			// Token verification is opt-in (JWKS + /api/token/check-revocation cover the same checks).
+			if envEnabled("ENABLE_VERIFY_TOKEN") {
+				r.Post("/verify-token", authHandler.VerifyToken)
+				log.Println("POST /api/verify-token enabled (ENABLE_VERIFY_TOKEN)")
+			}
 			r.Post("/token/check-revocation", authHandler.CheckRevocation)
 			r.Post("/reset-password", authHandler.ResetPassword)
 			r.Post("/reset-password/confirm", authHandler.ConfirmResetPassword)

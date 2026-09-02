@@ -21,7 +21,7 @@ This document describes the HTTP API exposed by the auth service. All API routes
 ### Bearer token
 
 - Tokens can be sent in the **`Authorization: Bearer <token>`** header. When both cookie and header are present, the middleware uses the header.
-- **Verify token** (`POST /api/verify-token`) accepts the token in `Authorization: Bearer` or in a JSON body `{ "token": "<token>" }`.
+- **Verify token** (`POST /api/verify-token`) is **disabled by default**. Set `ENABLE_VERIFY_TOKEN=true` to expose it. When enabled, it accepts the token in `Authorization: Bearer` or in a JSON body `{ "token": "<token>" }`. Prefer local verification via JWKS plus `POST /api/token/check-revocation`.
 - For **Bearer-only** clients (e.g. mobile apps, server-to-server), **no CSRF token or cookie is required**; only a valid JWT in the header.
 
 ### Protected routes
@@ -158,9 +158,11 @@ For **cookie-based** (browser) sessions, PUT and POST also require the **`X-CSRF
 
 ### Verify token
 
+**Opt-in.** This route is not registered unless `ENABLE_VERIFY_TOKEN` is set to a truthy value (`1`, `true`, `yes`, `on`). Otherwise the path returns 404. JWTs can be verified independently via `GET /.well-known/jwks.json`; use `POST /api/token/check-revocation` for logout.
+
 | Method | Path               | Auth | Description                                                |
 |--------|--------------------|------|------------------------------------------------------------|
-| `POST` | `/api/verify-token`| No   | Check if a JWT is valid (signature, claims, not revoked). Rate-limited. |
+| `POST` | `/api/verify-token`| No   | Check if a JWT is valid (signature, claims, not revoked). Rate-limited. Requires `ENABLE_VERIFY_TOKEN`. |
 
 **Token input (one of):**
 
@@ -335,7 +337,7 @@ All protected routes require a valid JWT (cookie or `Authorization: Bearer`). Co
 | `POST` | `/api/signup`               | No      | Register; send verification code |
 | `POST` | `/api/verify-email`         | No      | Verify email with code         |
 | `POST` | `/api/login`                | No      | Login; set JWT + CSRF cookies  |
-| `POST` | `/api/verify-token`         | No      | Check JWT validity             |
+| `POST` | `/api/verify-token`         | No      | Check JWT validity (opt-in: `ENABLE_VERIFY_TOKEN`) |
 | `POST` | `/api/token/check-revocation` | No    | Check if jti is revoked        |
 | `POST` | `/api/reset-password`       | No      | Request password-reset email   |
 | `POST` | `/api/reset-password/confirm` | No    | Set new password with token    |
@@ -358,4 +360,4 @@ All protected routes require a valid JWT (cookie or `Authorization: Bearer`). Co
 
 ## Rate limiting
 
-Auth-related endpoints (signup, verify-email, login, verify-token, token/check-revocation, reset-password, reset-password/confirm) and `/.well-known/jwks.json` are rate-limited per client IP (configurable via `RATE_LIMIT_REQUESTS_PER_MINUTE`). Excessive requests return `429 Too Many Requests`. Account lockout may also apply after repeated failed logins.
+Auth-related endpoints (signup, verify-email, login, token/check-revocation, reset-password, reset-password/confirm, and verify-token when enabled) and `/.well-known/jwks.json` are rate-limited per client IP (configurable via `RATE_LIMIT_REQUESTS_PER_MINUTE`). Excessive requests return `429 Too Many Requests`. Account lockout may also apply after repeated failed logins.
