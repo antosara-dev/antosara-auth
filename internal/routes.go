@@ -5,13 +5,14 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/antosara-dev/antosara-auth/internal/oidc"
 	"github.com/antosara-dev/antosara-auth/internal/web"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/jwtauth/v5"
 )
 
 // RegisterRoutes registers all application routes
-func RegisterRoutes(authHandler *AuthHandler, r chi.Router) {
+func RegisterRoutes(authHandler *AuthHandler, oidcHandler *oidc.Handler, r chi.Router) {
 
 	wd, err := os.Getwd()
 	if err != nil {
@@ -20,6 +21,7 @@ func RegisterRoutes(authHandler *AuthHandler, r chi.Router) {
 
 	// Local dev only: serve embedded password reset page at PASSWORD_RESET_URL path
 	web.RegisterDevPasswordResetPage(r)
+	web.RegisterDevOIDCRelyingParty(r)
 
 	// Standards-based public JWKS endpoint (rate-limited)
 	r.Group(func(r chi.Router) {
@@ -76,4 +78,11 @@ func RegisterRoutes(authHandler *AuthHandler, r chi.Router) {
 		// Add logout route
 		r.Post("/api/logout", authHandler.Logout)
 	})
+
+	// OIDC Identity Provider (isolated from /api)
+	if oidcHandler != nil {
+		r.Route("/oidc-idp", func(r chi.Router) {
+			oidcHandler.Mount(r, authHandler.RateLimitMiddleware)
+		})
+	}
 }

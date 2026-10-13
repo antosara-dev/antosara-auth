@@ -10,6 +10,7 @@ Deploy and run the auth service (see [README.md](README.md)). Other services do 
 
 - **Base URL:** e.g. `https://auth.yourdomain.com` (your auth service origin).
 - **API:** [API.md](API.md) describes all endpoints (signup, login, profile, logout, etc.).
+- **OIDC IdP:** [OIDC.md](OIDC.md) describes the Authorization Code flow at `/oidc-idp` for third-party relying parties. That protocol is separate from the `/api` JWT cookie API.
 
 ---
 
@@ -106,3 +107,5 @@ Most consumers only need the HTTP API and JWT verification (sections 2 and 3); u
 | Go services        | Verify JWTs as above; use `pkg/client.CheckRevoked(ctx, authURL, jti)` for revocation. Optionally import `pkg` for types. |
 
 For full endpoint and request/response details, see [API.md](API.md).
+
+To sign users into another application with OpenID Connect (authorization code + PKCE), see [OIDC.md](OIDC.md). OIDC ID and access tokens are not interchangeable with the JWTs issued by `POST /api/login`.

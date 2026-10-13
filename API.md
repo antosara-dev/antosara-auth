@@ -4,6 +4,8 @@ This document describes the HTTP API exposed by the auth service. All API routes
 
 **Base path:** All auth API routes are prefixed with `/api` unless noted.
 
+The OIDC Identity Provider is documented separately in [OIDC.md](OIDC.md) (`/oidc-idp`). It does not change the `/api` contract below.
+
 **Content type:** Request bodies must be `Content-Type: application/json` where applicable. Success responses are `application/json` unless stated otherwise.
 
 **CORS:** Allowed origins are configured via `CORS_ORIGINS`; credentials (cookies) are supported.

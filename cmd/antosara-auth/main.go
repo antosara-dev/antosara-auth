@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/antosara-dev/antosara-auth/internal"
+	"github.com/antosara-dev/antosara-auth/internal/oidc"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -96,14 +97,36 @@ func main() {
 	}
 	authHandler := internal.NewAuthHandler(jwtPrivateKey, userRepo, tokenRevokeRepo, csrfRepo)
 
-	// Register all routes
-	internal.RegisterRoutes(authHandler, r)
+	oidcStores, err := internal.NewOIDCStores()
+	if err != nil {
+		log.Fatalf("Failed to initialize OIDC stores: %v", err)
+	}
+	oidcClients, err := oidc.LoadClientsFromEnv()
+	if err != nil {
+		log.Fatalf("Failed to load OIDC clients: %v", err)
+	}
 
-	// Start server
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "5000"
 	}
+	if oidc.RegisterDevRPClient(oidcClients, port) {
+		log.Printf("Dev OIDC relying party clients %q (public) and %q (confidential) registered for http://localhost:%s/oidc-rp", oidc.DevRPClientID, oidc.DevRPConfidentialClientID, port)
+	}
+	oidcHandler, err := oidc.NewHandler(oidc.Deps{
+		Users:    userRepo,
+		Clients:  oidcClients,
+		Stores:   oidcStores,
+		Sessions: authHandler,
+	})
+	if err != nil {
+		log.Fatalf("Failed to initialize OIDC handler: %v", err)
+	}
+
+	// Register all routes
+	internal.RegisterRoutes(authHandler, oidcHandler, r)
+
+	// Start server
 	log.Printf("Server starting on port %s", port)
 	if err := http.ListenAndServe(":"+port, r); err != nil {
 		log.Fatal(err)

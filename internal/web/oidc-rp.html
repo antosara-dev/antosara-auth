@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OIDC test app</title>
+  <link rel="stylesheet" href="/oidc-rp.css">
+  <meta name="oidc-issuer" content="{{ISSUER}}">
+  <meta name="oidc-client-id" content="oidc-rp">
+</head>
+<body>
+  <main>
+    <h1>OIDC test app</h1>
+    <p class="hint">Local relying party for {{ISSUER}}.</p>
+
+    <p id="message" class="message" hidden role="status"></p>
+
+    <section id="signed-out">
+      <h2>Public client <code>oidc-rp</code></h2>
+      <p class="hint">Browser exchanges the code at <code>/token</code> with PKCE only.</p>
+      <button type="button" id="login-btn">Sign in (public)</button>
+      <button type="button" id="login-prompt-btn" class="secondary">Sign in (public, prompt=login)</button>
+
+      <h2>Confidential client <code>oidc-rp-confidential</code></h2>
+      <p class="hint">Server callback at <code>/oidc-rp/callback</code> exchanges the code with a client secret. The secret never goes to the browser.</p>
+      <a class="button" href="/oidc-rp/confidential">Sign in (confidential)</a>
+      <a class="button secondary" href="/oidc-rp/confidential?prompt=login">Sign in (confidential, prompt=login)</a>
+    </section>
+
+    <section id="signed-in" hidden>
+      <h2>UserInfo</h2>
+      <pre id="userinfo"></pre>
+      <h2>ID token</h2>
+      <pre id="id-token"></pre>
+      <div class="actions">
+        <button type="button" id="refresh-btn" class="secondary">Refresh tokens</button>
+        <button type="button" id="logout-btn">Sign out</button>
+      </div>
+    </section>
+  </main>
+  <script src="/oidc-rp.js"></script>
+</body>
+</html>

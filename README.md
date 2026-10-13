@@ -5,6 +5,7 @@ A **Go-based API service** for authentication and user management: signup, login
 **Stack:** Go; storage backends DynamoDB, PostgreSQL, and SQLite (users, tokens, CSRF); optional AWS Secrets Manager (config); SMTP/SES (email). Configuration comes from the process environment and an optional local `.env`, or from a single Secrets Manager secret if `AWS_SECRET_ARN` / `AWS_SECRET_NAME` is set.
 
 - **API reference:** [API.md](API.md)
+- **OIDC Identity Provider (`/oidc-idp`):** [OIDC.md](OIDC.md). Optional local test relying party at `/oidc-rp` (`ENABLE_OIDC_RP=true`).
 - **Using this service (frontends, backends, token verification):** [SERVICE_USAGE.md](SERVICE_USAGE.md)
 
 ---
@@ -27,7 +28,7 @@ Set `DB_BACKEND` to choose storage. The default is `dynamodb`. PostgreSQL and SQ
 
 | `DB_BACKEND` | Use | Required settings |
 |---|---|---|
-| `dynamodb` (default) | AWS DynamoDB tables `Users`, `RevokedTokens`, `SessionCSRF` | `AWS_REGION` (and AWS credentials). Tables must exist; see `scripts/terraform`. |
+| `dynamodb` (default) | AWS DynamoDB tables `Users`, `RevokedTokens`, `SessionCSRF`, plus OIDC tables `OIDCAuthCodes`, `OIDCRefreshTokens`, `OIDCConsents` | `AWS_REGION` (and AWS credentials). Tables must exist; see `scripts/terraform`. |
 | `postgres` | PostgreSQL | `DATABASE_URL`, or `POSTGRES_HOST` + `POSTGRES_USER` + `POSTGRES_DB` (optional `POSTGRES_PORT`, `POSTGRES_PASSWORD`, `POSTGRES_SSLMODE`). |
 | `sqlite` (alias `sqlite3`) | SQLite file (or in-memory DSN) | `SQLITE_PATH`, `SQLITE_DSN`, or `DATABASE_URL`. |
 
@@ -129,7 +130,7 @@ The IAM user or role used by the auth service (task role, instance profile, or i
 
 **DynamoDB**
 
-The service uses three tables: `Users`, `RevokedTokens`, `SessionCSRF`. Minimum actions:
+The service uses tables: `Users`, `RevokedTokens`, `SessionCSRF`, and for the OIDC IdP `OIDCAuthCodes`, `OIDCRefreshTokens`, `OIDCConsents`. Minimum actions:
 
 - `dynamodb:DescribeTable`
 - `dynamodb:GetItem`
@@ -137,9 +138,9 @@ The service uses three tables: `Users`, `RevokedTokens`, `SessionCSRF`. Minimum 
 - `dynamodb:UpdateItem`
 - `dynamodb:DeleteItem`
 - `dynamodb:Query`
-- `dynamodb:UpdateTimeToLive` (optional; used best-effort to enable TTL on RevokedTokens and SessionCSRF)
+- `dynamodb:UpdateTimeToLive` (optional; used best-effort to enable TTL on RevokedTokens, SessionCSRF, and OIDC code/refresh tables)
 
-Scope the policy to the table ARNs in your account/region (e.g. `arn:aws:dynamodb:REGION:ACCOUNT:table/Users`, and the same for `RevokedTokens` and `SessionCSRF`).
+Scope the policy to the table ARNs in your account/region (e.g. `arn:aws:dynamodb:REGION:ACCOUNT:table/Users`, and the same for `RevokedTokens`, `SessionCSRF`, `OIDCAuthCodes`, `OIDCRefreshTokens`, and `OIDCConsents`).
 
 **SMTP (email)**
 
@@ -197,11 +198,11 @@ If using SES SMTP for email, follow instructions to setup the SMTP interface htt
 
 **IAM** (when `DB_BACKEND=dynamodb`, and when using Secrets Manager or SES)
 
-- [ ] IAM role or user has the [required permissions](#required-iam-permissions) for DynamoDB (tables `Users`, `RevokedTokens`, `SessionCSRF`). Include Secrets Manager (`GetSecretValue`) only if you load config from a secret. Include SES (`SendRawEmail`) if you send mail via SES.
+- [ ] IAM role or user has the [required permissions](#required-iam-permissions) for DynamoDB (tables `Users`, `RevokedTokens`, `SessionCSRF`, and OIDC tables if you use `/oidc-idp`). Include Secrets Manager (`GetSecretValue`) only if you load config from a secret. Include SES (`SendRawEmail`) if you send mail via SES.
 
 **Infrastructure**
 
-- [ ] **DynamoDB:** tables `Users`, `RevokedTokens`, and `SessionCSRF` exist in the same region (e.g. via [scripts/terraform](scripts/terraform)).
+- [ ] **DynamoDB:** tables `Users`, `RevokedTokens`, `SessionCSRF`, `OIDCAuthCodes`, `OIDCRefreshTokens`, and `OIDCConsents` exist in the same region (e.g. via [scripts/terraform](scripts/terraform)).
 - [ ] **PostgreSQL:** database exists and the service can connect (`DATABASE_URL` or `POSTGRES_*`). Schema is created on startup.
 - [ ] **SQLite:** `SQLITE_PATH` / `SQLITE_DSN` is writable. Schema is created on startup.
 
